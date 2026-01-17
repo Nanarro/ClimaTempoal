@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="logo.jpg" width="200" alt="Logo Clima Tempoal">
+  <img src="logo.png" width="200" alt="Logo Clima Tempoal">
   <h1>🚨 Monitor Civil Tempoal</h1>
 </div>
 
