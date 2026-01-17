@@ -1,0 +1,27 @@
+name: Reporte Diario Clima
+
+on:
+  schedule:
+    # 13:00 UTC son las 07:00 AM Hora del Centro de México
+    - cron: '0 13 * * *'
+  workflow_dispatch: # Esto permite probarlo con un botón manual
+
+jobs:
+  run-script:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar código
+        uses: actions/checkout@v3
+
+      - name: Instalar Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Instalar librerías
+        run: pip install -r requirements.txt
+
+      - name: Ejecutar Monitor de Clima
+        run: python main.py
+        
