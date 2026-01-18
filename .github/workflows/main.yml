@@ -2,8 +2,8 @@ name: Reporte Diario Clima
 
 on:
   schedule:
-    # 13:00 UTC son las 07:00 AM Hora del Centro de México
-    - cron: '0 13 * * *'
+    # 12:30 UTC = 06:30 AM Hora del Centro de México
+    - cron: '30 12 * * *'
   workflow_dispatch: # Permite ejecutarlo manualmente
 
 jobs:
