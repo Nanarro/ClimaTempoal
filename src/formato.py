@@ -59,7 +59,7 @@ def formatear_linea_horaria(hora, temp, sensacion, prob_lluvia, viento, uv):
         alertas += "☀️"
     
     return (
-        f"<code>{hora}h|{icono} {temp:4.1f}°"
+        f"<code>{hora}h|{icono} {temp:4.1f}°C"
         f"|💧{prob_lluvia:>2}%"
         f"|💨{viento:>2.0f}km/h"
         f"{' ' + alertas if alertas else ''}</code>\n"
@@ -120,6 +120,7 @@ def generar_pronostico_3_dias(daily):
         for i in range(1, min(4, len(daily['time']))):
             fecha = datetime.strptime(daily['time'][i], "%Y-%m-%d")
             dia = DIAS_ESP.get(fecha.strftime("%A"), "DÍA")
+            dia_num = fecha.strftime("%d/%m")
             
             temp_max = daily['temperature_2m_max'][i]
             temp_min = daily['temperature_2m_min'][i]
@@ -129,7 +130,7 @@ def generar_pronostico_3_dias(daily):
             
             icono = obtener_icono_clima(codigo)
             
-            msg += f"{icono} <b>{dia}</b>: {round(temp_min)}° - {round(temp_max)}°C"
+            msg += f"{icono} <b>{dia} {dia_num}</b>: {round(temp_min)}° - {round(temp_max)}°C"
             
             if lluvia > 5:
                 msg += f" | 💧 {round(lluvia)}mm"
