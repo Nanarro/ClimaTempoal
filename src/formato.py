@@ -1,3 +1,169 @@
+"""
+Módulo de formateo de mensajes para Telegram
+"""
+
+from datetime import datetime
+from .utils import logger, DIAS_ESP, formatear_fecha_completa
+
+def obtener_icono_clima(codigo):
+    """
+    Convierte código WMO en emoji descriptivo
+    https://open-meteo.com/en/docs
+    """
+    iconos = {
+        0: "☀️",      # Despejado
+        1: "🌤️",     # Principalmente despejado
+        2: "⛅",     # Parcialmente nublado
+        3: "☁️",     # Nublado
+        45: "🌫️",    # Niebla
+        48: "🌫️",    # Niebla con escarcha
+        51: "🌦️",    # Llovizna ligera
+        53: "🌧️",    # Llovizna moderada
+        55: "🌧️",    # Llovizna densa
+        61: "🌧️",    # Lluvia ligera
+        63: "🌧️",    # Lluvia moderada
+        65: "⛈️",     # Lluvia intensa
+        71: "🌨️",    # Nevada ligera
+        73: "🌨️",    # Nevada moderada
+        75: "❄️",     # Nevada intensa
+        80: "🌦️",    # Chubascos ligeros
+        81: "⛈️",     # Chubascos moderados
+        82: "⛈️",     # Chubascos violentos
+        95: "⛈️",     # Tormenta
+        96: "⛈️",     # Tormenta con granizo ligero
+        99: "⛈️"      # Tormenta con granizo fuerte
+    }
+    return iconos.get(codigo, "🌡️")
+
+def formatear_linea_horaria(hora, temp, sensacion, prob_lluvia, viento, uv):
+    """Formatea una línea del pronóstico horario"""
+    # Determinar icono principal
+    if prob_lluvia > 70:
+        icono = "⛈️"
+    elif prob_lluvia > 40:
+        icono = "🌧️"
+    elif temp < 16:
+        icono = "🥶"
+    elif temp > 32:
+        icono = "🥵"
+    elif 18 <= temp <= 25:
+        icono = "🍃"
+    else:
+        icono = "☁️"
+    
+    # Agregar indicadores especiales
+    alertas = ""
+    if viento > 40:
+        alertas += "💨"
+    if uv >= 8:
+        alertas += "☀️"
+    
+    return (
+        f"<code>{hora}h|{icono} {temp:4.1f}°"
+        f"|💧{prob_lluvia:>2}%"
+        f"|🌬{viento:>2.0f}k"
+        f"{' ' + alertas if alertas else ''}</code>\n"
+    )
+
+def generar_resumen_ejecutivo(current, daily):
+    """Genera resumen ejecutivo del día"""
+    try:
+        temp_actual = current.get('temperatura', 0)
+        temp_max = daily['temperature_2m_max'][0]
+        temp_min = daily['temperature_2m_min'][0]
+        lluvia = daily['precipitation_sum'][0]
+        prob_lluvia = daily.get('precipitation_probability_max', [0])[0]
+        
+        resumen = "📋 <b>RESUMEN EJECUTIVO:</b> "
+        
+        # Condición de lluvia
+        if lluvia > 20:
+            resumen += "⛈️ Día muy lluvioso. "
+        elif lluvia > 5:
+            resumen += "🌧️ Lluvias moderadas. "
+        elif prob_lluvia > 40:
+            resumen += "☁️ Probabilidad de lluvia. "
+        else:
+            resumen += "☀️ Día seco. "
+        
+        # Temperatura
+        if temp_max > 36:
+            resumen += "🔥 Calor extremo. "
+        elif temp_max > 32:
+            resumen += "🥵 Calor intenso. "
+        elif temp_max < 18:
+            resumen += "🧥 Fresco. "
+        elif temp_min < 10:
+            resumen += "❄️ Madrugada fría. "
+        else:
+            resumen += "🌡️ Temperatura agradable. "
+        
+        # Recomendación
+        if lluvia > 10:
+            resumen += "☂️ Lleva paraguas."
+        elif temp_max > 34:
+            resumen += "💧 Hidrátate bien."
+        elif temp_min < 12:
+            resumen += "🧣 Abrígate en la mañana."
+        
+        return resumen + "\n"
+        
+    except Exception as e:
+        logger.error(f"Error generando resumen: {e}")
+        return ""
+
+def generar_pronostico_3_dias(daily):
+    """Genera pronóstico compacto de 3 días"""
+    try:
+        msg = "\n📅 <b>PRÓXIMOS 3 DÍAS:</b>\n"
+        
+        for i in range(1, min(4, len(daily['time']))):
+            fecha = datetime.strptime(daily['time'][i], "%Y-%m-%d")
+            dia = DIAS_ESP.get(fecha.strftime("%A"), "DÍA")
+            
+            temp_max = daily['temperature_2m_max'][i]
+            temp_min = daily['temperature_2m_min'][i]
+            lluvia = daily['precipitation_sum'][i]
+            prob_lluvia = daily.get('precipitation_probability_max', [0] * 7)[i]
+            codigo = daily.get('weather_code', [0] * 7)[i]
+            
+            icono = obtener_icono_clima(codigo)
+            
+            msg += f"{icono} <b>{dia}</b>: {round(temp_min)}° - {round(temp_max)}°C"
+            
+            if lluvia > 5:
+                msg += f" | 💧 {round(lluvia)}mm"
+            elif prob_lluvia > 50:
+                msg += f" | 💧 {prob_lluvia}%"
+            
+            msg += "\n"
+        
+        return msg
+        
+    except Exception as e:
+        logger.error(f"Error generando pronóstico 3 días: {e}")
+        return ""
+
+def generar_estadisticas_semana(daily):
+    """Genera estadísticas de la semana"""
+    try:
+        temp_max_semana = max(daily['temperature_2m_max'])
+        temp_min_semana = min(daily['temperature_2m_min'])
+        lluvia_total = sum(daily['precipitation_sum'])
+        viento_max = max(daily['wind_gusts_10m_max'])
+        
+        msg = "\n📊 <b>ESTADÍSTICAS SEMANALES:</b>\n"
+        msg += f"   🔥 Máxima: {round(temp_max_semana)}°C\n"
+        msg += f"   🧊 Mínima: {round(temp_min_semana)}°C\n"
+        msg += f"   💧 Lluvia acumulada: {round(lluvia_total, 1)} mm\n"
+        msg += f"   💨 Viento máximo: {round(viento_max)} km/h\n"
+        
+        return msg
+        
+    except Exception as e:
+        logger.error(f"Error generando estadísticas: {e}")
+        return ""
+
 def generar_mensaje_completo(data, alertas, eventos_especiales):
     """
     Genera el mensaje completo formateado para Telegram
@@ -86,8 +252,8 @@ def generar_mensaje_completo(data, alertas, eventos_especiales):
         
         msg += "\n━━━━━━━━━━━━━━━━━━━━\n"
         
-        # Estadísticas (AQUÍ ESTABA EL ERROR)
-        msg += generar_estadisticas_semana(daily)  # ← Agregado (daily)
+        # Estadísticas
+        msg += generar_estadisticas_semana(daily)
         
         msg += "\n━━━━━━━━━━━━━━━━━━━━\n"
         msg += "\n📡 <i>Fuente: Open-Meteo (GFS/ECMWF)</i>\n"
