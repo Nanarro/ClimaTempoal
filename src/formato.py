@@ -253,7 +253,7 @@ def generar_mensaje_completo(data, alertas, eventos_especiales):
         msg += "\n━━━━━━━━━━━━━━━━━━━━\n"
         
         # Estadísticas
-        msg += generar_estadisticas_semana
+        msg += generar_estadisticas_semana(daily)
         msg += generar_estadisticas_semana(daily)
         
         msg += "\n━━━━━━━━━━━━━━━━━━━━\n"
