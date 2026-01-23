@@ -185,7 +185,7 @@ def generar_mensaje_completo(data, alertas, eventos_especiales):
         sunset = datetime.fromisoformat(daily['sunset'][0]).strftime("%H:%M")
         
         # Construir mensaje
-        msg = "🚨 <b>MONITOR CIVIL TEMPOAL</b> 🚨\n"
+        msg = "🚨 <b>MONITOREO PROTECCIÓN CIVIL TEMPOAL</b> 🚨\n"
         msg += f"📅 <i>{formatear_fecha_completa()}</i>\n\n"
         
         # Resumen ejecutivo
@@ -202,7 +202,7 @@ def generar_mensaje_completo(data, alertas, eventos_especiales):
         msg += f"   Sensación térmica: {round(sensacion, 1)}°C\n"
         msg += f"   Humedad: {round(humedad)}%\n"
         msg += f"   Viento: {round(viento_actual, 1)} km/h\n"
-        msg += f"   🌅 Amanecer: {sunrise} | 🌇 Atardecer: {sunset}\n"
+        msg += f"   Amanecer: {sunrise} | Atardecer: {sunset}\n"
         
         msg += "\n━━━━━━━━━━━━━━━━━━━━\n"
         
