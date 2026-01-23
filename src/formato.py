@@ -61,7 +61,7 @@ def formatear_linea_horaria(hora, temp, sensacion, prob_lluvia, viento, uv):
     return (
         f"<code>{hora}h|{icono} {temp:4.1f}°"
         f"|💧{prob_lluvia:>2}%"
-        f"|🌬{viento:>2.0f}k"
+        f"|💨{viento:>2.0f}km/h"
         f"{' ' + alertas if alertas else ''}</code>\n"
     )
 
