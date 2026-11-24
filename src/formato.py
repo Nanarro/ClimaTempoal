@@ -389,11 +389,16 @@ def resumir_bloque(datos, hora_inicio, hora_fin):
 
 def obtener_bloques_diarios(datos):
     """Devuelve los 3 bloques del día (mañana, tarde, noche) con su resumen."""
+    daily = datos.get('daily', {}) or {}
+    lluvias_7d = daily.get('precipitation_sum') or []
+    lluvia_7d = round(sum(v for v in lluvias_7d if v is not None), 1)
     bloques = []
     for nombre, horas, inicio, fin in BLOQUES_DIA:
         resumen = resumir_bloque(datos, inicio, fin)
         resumen['nombre'] = nombre
         resumen['horas'] = horas
+        # Lluvia acumulada de la semana (mm): sirve para detectar sequía
+        resumen['lluvia_7d'] = lluvia_7d
         bloques.append(resumen)
     return bloques
 
