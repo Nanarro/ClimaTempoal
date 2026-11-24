@@ -35,7 +35,10 @@ def obtener_datos_climaticos(max_reintentos=3, timeout=20):
             "precipitation",
             "weather_code",
             "wind_speed_10m",
+            "wind_direction_10m",
             "wind_gusts_10m",
+            "surface_pressure",
+            "cloud_cover",
             "uv_index"
         ],
         "daily": [

@@ -96,6 +96,94 @@ def enviar_mensaje_telegram(mensaje, max_reintentos=3):
     logger.error("❌ Todos los intentos de envío fallaron")
     return False
 
+def enviar_foto_telegram(ruta_imagen, caption=None, max_reintentos=3):
+    """
+    Envía una foto a Telegram con reintentos automáticos.
+
+    Args:
+        ruta_imagen: Ruta del archivo de imagen a enviar.
+        caption: Texto opcional que acompaña la foto (máx. 1024 caracteres).
+        max_reintentos: Número máximo de intentos.
+
+    Returns:
+        bool: True si se envió exitosamente, False si falló.
+    """
+    token = os.environ.get('TELEGRAM_TOKEN')
+    chat_id = os.environ.get('TELEGRAM_CHAT_ID')
+
+    if not token:
+        logger.error("❌ TELEGRAM_TOKEN no está configurado")
+        return False
+
+    if not chat_id:
+        logger.error("❌ TELEGRAM_CHAT_ID no está configurado")
+        return False
+
+    if not ruta_imagen or not os.path.exists(ruta_imagen):
+        logger.error(f"❌ Imagen no encontrada: {ruta_imagen}")
+        return False
+
+    logger.info(f"📤 Enviando foto a {chat_id}...")
+
+    url = f"https://api.telegram.org/bot{token.strip()}/sendPhoto"
+
+    payload = {
+        "chat_id": chat_id,
+        "parse_mode": "HTML",
+    }
+    if caption:
+        # Telegram limita el caption a 1024 caracteres
+        payload["caption"] = caption[:1024]
+
+    for intento in range(1, max_reintentos + 1):
+        try:
+            logger.info(f"🖼️  Intento {intento}/{max_reintentos}...")
+
+            with open(ruta_imagen, 'rb') as foto:
+                files = {"photo": foto}
+                response = requests.post(url, data=payload, files=files,
+                                         timeout=30)
+
+            if response.status_code == 200:
+                logger.info("✅ ¡FOTO ENVIADA EXITOSAMENTE!")
+                result = response.json()
+                if result.get('ok'):
+                    logger.info(f"   📊 Message ID: {result['result']['message_id']}")
+                return True
+
+            elif response.status_code in (400, 401, 404):
+                logger.error(f"❌ Error {response.status_code} enviando foto:")
+                logger.error(f"   {response.text}")
+                # No reintentar: problema con la solicitud o el token/chat
+                return False
+
+            else:
+                logger.warning(f"⚠️  Error {response.status_code}: {response.text}")
+                if intento < max_reintentos:
+                    import time
+                    time.sleep(3)
+
+        except requests.Timeout:
+            logger.warning(f"⏱️  Timeout en intento {intento}")
+            if intento < max_reintentos:
+                import time
+                time.sleep(3)
+
+        except requests.RequestException as e:
+            logger.error(f"❌ Error de conexión: {e}")
+            if intento < max_reintentos:
+                import time
+                time.sleep(3)
+
+        except Exception as e:
+            logger.error(f"❌ Error inesperado: {e}")
+            if intento < max_reintentos:
+                import time
+                time.sleep(3)
+
+    logger.error("❌ Todos los intentos de envío de foto fallaron")
+    return False
+
 def validar_configuracion_telegram():
     """
     Valida que las variables de entorno de Telegram estén configuradas

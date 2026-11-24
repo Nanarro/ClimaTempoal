@@ -266,3 +266,297 @@ def generar_mensaje_completo(data, alertas, eventos_especiales):
     except Exception as e:
         logger.error(f"Error generando mensaje completo: {e}")
         return None
+
+# ---------------------------------------------------------------------------
+# Tarjeta diaria: bloques mañana / tarde / noche y conclusiones narradas
+# ---------------------------------------------------------------------------
+
+BLOQUES_DIA = [
+    ("MAÑANA", "06–12 h", 6, 12),
+    ("TARDE", "12–18 h", 12, 18),
+    ("NOCHE", "18–00 h", 18, 24),
+]
+
+
+def direccion_viento_texto(grados):
+    """Convierte grados (0-360) a punto cardinal en español (8 sectores)."""
+    if grados is None:
+        return None
+    sectores = ["NORTE", "NORESTE", "ESTE", "SURESTE",
+                "SUR", "SUROESTE", "OESTE", "NOROESTE"]
+    idx = int(((float(grados) + 22.5) % 360) // 45)
+    return sectores[idx]
+
+
+def _direccion_dominante(direcciones):
+    """Dirección más frecuente entre una lista de grados."""
+    if not direcciones:
+        return None
+    sectores = [direccion_viento_texto(d) for d in direcciones]
+    return max(set(sectores), key=sectores.count)
+
+
+def _promedio(valores):
+    """Promedio redondeado a 1 decimal, o None si no hay valores."""
+    if not valores:
+        return None
+    return round(sum(valores) / len(valores), 1)
+
+
+def resumir_bloque(datos, hora_inicio, hora_fin):
+    """
+    Resume un bloque horario (ej. 06-12 h) del día actual.
+
+    Usa los datos horarios de Open-Meteo. Si el bloque no tiene datos
+    horarios (por ejemplo, una corrida tardía), aproxima con el resumen
+    diario para que la tarjeta nunca falle por falta de datos.
+    """
+    hourly = datos.get('hourly', {}) or {}
+    daily = datos.get('daily', {}) or {}
+    tiempos = hourly.get('time', []) or []
+    hoy = (daily.get('time') or [None])[0]
+
+    indices = []
+    for i, t in enumerate(tiempos):
+        try:
+            dt = datetime.fromisoformat(t)
+        except (ValueError, TypeError):
+            continue
+        if dt.strftime("%Y-%m-%d") == hoy and hora_inicio <= dt.hour < hora_fin:
+            indices.append(i)
+
+    def _vals(clave):
+        arr = hourly.get(clave) or []
+        return [arr[i] for i in indices
+                if i < len(arr) and arr[i] is not None]
+
+    temps = _vals('temperature_2m')
+    if not temps:
+        # Sin datos horarios: aproximación con el resumen diario
+        maxs = daily.get('temperature_2m_max') or []
+        mins = daily.get('temperature_2m_min') or []
+        probs = daily.get('precipitation_probability_max') or []
+        vientos = daily.get('wind_speed_10m_max') or []
+        dirs = daily.get('wind_direction_10m_dominant') or []
+        media = None
+        if maxs and mins:
+            media = round((maxs[0] + mins[0]) / 2, 1)
+        return {
+            'temp_media': media,
+            'sensacion_media': media,
+            'temp_min': round(mins[0], 1) if mins else None,
+            'temp_max': round(maxs[0], 1) if maxs else None,
+            'prob_max': probs[0] if probs else 0,
+            'lluvia_mm': round(sum(hourly.get('precipitation') or []) or
+                               (daily.get('precipitation_sum') or [0])[0], 1),
+            'viento_dir': direccion_viento_texto(dirs[0]) if dirs else None,
+            'viento_min': None,
+            'viento_max': round(vientos[0], 1) if vientos else None,
+            'rafaga_max': None,
+            'presion_media': None,
+            'nubosidad_media': None,
+            'codigo': (daily.get('weather_code') or [None])[0],
+            'estimado': True,
+        }
+
+    sens = _vals('apparent_temperature')
+    probs = _vals('precipitation_probability')
+    lluvias = _vals('precipitation')
+    vientos = _vals('wind_speed_10m')
+    rafagas = _vals('wind_gusts_10m')
+    dirs = _vals('wind_direction_10m')
+    presiones = _vals('surface_pressure')
+    nubes = _vals('cloud_cover')
+    codigos = _vals('weather_code')
+
+    return {
+        'temp_media': _promedio(temps),
+        'sensacion_media': _promedio(sens) if sens else _promedio(temps),
+        'temp_min': round(min(temps), 1),
+        'temp_max': round(max(temps), 1),
+        'prob_max': max(probs) if probs else 0,
+        'lluvia_mm': round(sum(lluvias), 1) if lluvias else 0,
+        'viento_dir': _direccion_dominante(dirs),
+        'viento_min': round(min(vientos), 1) if vientos else None,
+        'viento_max': round(max(vientos), 1) if vientos else None,
+        'rafaga_max': round(max(rafagas), 1) if rafagas else None,
+        'presion_media': round(_promedio(presiones)) if presiones else None,
+        'nubosidad_media': round(_promedio(nubes)) if nubes else None,
+        'codigo': max(set(codigos), key=codigos.count) if codigos else None,
+        'estimado': False,
+    }
+
+
+def obtener_bloques_diarios(datos):
+    """Devuelve los 3 bloques del día (mañana, tarde, noche) con su resumen."""
+    bloques = []
+    for nombre, horas, inicio, fin in BLOQUES_DIA:
+        resumen = resumir_bloque(datos, inicio, fin)
+        resumen['nombre'] = nombre
+        resumen['horas'] = horas
+        bloques.append(resumen)
+    return bloques
+
+
+def etiqueta_bloque(resumen):
+    """Etiqueta corta del bloque, estilo MeteoAlert (ej. NORTE LIGERO)."""
+    prob = resumen.get('prob_max') or 0
+    lluvia = resumen.get('lluvia_mm') or 0
+    viento_dir = resumen.get('viento_dir')
+    viento_max = resumen.get('viento_max') or 0
+    nubes = resumen.get('nubosidad_media')
+
+    if lluvia >= 10 or prob >= 80:
+        return "LLUVIAS FUERTES" if lluvia >= 10 else "LLUVIAS"
+    if prob >= 60:
+        return "POSIBLES LLUVIAS"
+    if viento_dir == "NORTE":
+        if viento_max >= 40:
+            return "NORTE FUERTE"
+        if viento_max >= 20:
+            return "NORTE MODERADO"
+        if viento_max >= 10:
+            return "NORTE LIGERO"
+    if nubes is not None:
+        if nubes >= 70:
+            return "NUBLADO"
+        if nubes >= 40:
+            return "MEDIO NUBLADO"
+        if nubes < 20 and prob < 20:
+            return "DESPEJADO"
+    if prob >= 40:
+        return "LLUVIA LIGERA"
+    return "PARCIALMENTE NUBLADO"
+
+
+def nivel_confianza(bloques):
+    """
+    Nivel de confianza del pronóstico (BAJA / MEDIA / ALTA) y segmentos
+    llenos de 4 para la barra de la tarjeta.
+
+    Heurística: si la probabilidad de lluvia varía mucho entre bloques o
+    el viento cambia de dirección varias veces en el día, el pronóstico
+    es menos confiable (como cuando MeteoAlert marca BAJA por la
+    incertidumbre en horarios y distribución de la lluvia).
+    """
+    probs = [b.get('prob_max') or 0 for b in bloques]
+    spread = (max(probs) - min(probs)) if probs else 0
+    dirs = {b.get('viento_dir') for b in bloques if b.get('viento_dir')}
+    if spread >= 60 or len(dirs) >= 3:
+        return ("BAJA", 2)
+    if spread <= 30 and len(dirs) <= 1:
+        return ("ALTA", 4)
+    return ("MEDIA", 3)
+
+
+def _frase_lluvia(resumen):
+    """Frase sobre lluvia para un bloque."""
+    prob = resumen.get('prob_max') or 0
+    mm = resumen.get('lluvia_mm') or 0
+    if prob >= 70:
+        frase = f"alto potencial de lluvias ({prob}% de probabilidad"
+        if mm >= 5:
+            frase += f", hasta {mm:.0f} mm acumulados"
+        frase += "), pueden ser momentáneamente fuertes"
+        return frase
+    if prob >= 40:
+        return f"probabilidad de lluvia del {prob}%, con chubascos ocasionales"
+    if prob >= 20:
+        return f"alguna llovizna o lluvia ligera ocasional ({prob}%)"
+    return "sin lluvia esperada"
+
+
+def _frase_viento(resumen):
+    """Frase sobre viento para un bloque."""
+    direccion = resumen.get('viento_dir')
+    vmin = resumen.get('viento_min')
+    vmax = resumen.get('viento_max')
+    if not direccion or vmax is None:
+        return None
+    if vmax >= 40:
+        intensidad = "fuerte"
+    elif vmax >= 20:
+        intensidad = "moderado"
+    elif vmax >= 10:
+        intensidad = "ligero"
+    else:
+        intensidad = "flojo"
+    if vmin is not None and vmin != vmax:
+        rango = f"de {vmin:.0f} a {vmax:.0f} km/h"
+    else:
+        rango = f"de {vmax:.0f} km/h"
+    return f"viento del {direccion.lower()} {intensidad}, {rango}"
+
+
+def _frase_temperatura(resumen):
+    """Frase sobre temperatura para un bloque."""
+    media = resumen.get('temp_media')
+    if media is None:
+        return None
+    if media < 16:
+        ambiente = "ambiente frío"
+    elif media < 19:
+        ambiente = "ambiente fresco"
+    elif media <= 25:
+        ambiente = "ambiente templado"
+    elif media <= 30:
+        ambiente = "ambiente cálido"
+    else:
+        ambiente = "ambiente muy caluroso"
+    frase = (f"{ambiente}, temperatura media de {media:.0f}°C "
+             f"(mín. {resumen.get('temp_min'):.0f}°, "
+             f"máx. {resumen.get('temp_max'):.0f}°)")
+    sensacion = resumen.get('sensacion_media')
+    if sensacion is not None and abs(sensacion - media) >= 3:
+        frase += f", sensación térmica de {sensacion:.0f}°C"
+    return frase
+
+
+def generar_conclusiones_bloques(datos):
+    """
+    Genera una conclusión narrada por bloque (mañana, tarde, noche),
+    estilo MeteoAlert. Devuelve una lista de 3 textos en HTML para Telegram.
+    """
+    try:
+        bloques = obtener_bloques_diarios(datos)
+        conclusiones = []
+        for bloque in bloques:
+            partes = [_frase_lluvia(bloque)]
+            viento = _frase_viento(bloque)
+            if viento:
+                partes.append(viento)
+            temperatura = _frase_temperatura(bloque)
+            if temperatura:
+                partes.append(temperatura)
+            texto = ". ".join(
+                p[:1].upper() + p[1:] if p else p for p in partes) + "."
+            conclusiones.append(
+                f"• <b>{bloque['nombre']} ({bloque['horas']}):</b> {texto}")
+        return conclusiones
+    except Exception as e:
+        logger.error(f"Error generando conclusiones por bloque: {e}")
+        return []
+
+
+def generar_caption_tarjeta(datos):
+    """
+    Caption corto para la foto de la tarjeta (límite de Telegram: 1024
+    caracteres). Incluye la fecha y las 3 conclusiones por bloque.
+    """
+    try:
+        fecha = formatear_fecha_completa().split(" - ")[0]
+        lineas = [f"📅 <b>{fecha} — TEMPOAL</b>", ""]
+        lineas.extend(generar_conclusiones_bloques(datos))
+        caption = "\n".join(lineas)
+        if len(caption) <= 1000:
+            return caption
+        # Recortar por viñetas completas para no superar el límite
+        recortado = [lineas[0], ""]
+        for viñeta in lineas[2:]:
+            if len("\n".join(recortado + [viñeta])) > 1000:
+                break
+            recortado.append(viñeta)
+        return "\n".join(recortado)
+    except Exception as e:
+        logger.error(f"Error generando caption de tarjeta: {e}")
+        return "📅 <b>PRONÓSTICO DEL DÍA — TEMPOAL</b>"
