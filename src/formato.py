@@ -180,9 +180,18 @@ def generar_mensaje_completo(data, alertas, eventos_especiales):
         humedad = current.get('relative_humidity_2m', 0)
         viento_actual = current.get('wind_speed_10m', 0)
         
-        # Sol
-        sunrise = datetime.fromisoformat(daily['sunrise'][0]).strftime("%H:%M")
-        sunset = datetime.fromisoformat(daily['sunset'][0]).strftime("%H:%M")
+        # Sol (opcional: si Open-Meteo no trae amanecer/atardecer, se
+        # omite la línea y el reporte sigue; antes un solo campo
+        # faltante tumbaba todo el mensaje)
+        linea_sol = ""
+        try:
+            amanecer = daily.get('sunrise') or []
+            atardecer = daily.get('sunset') or []
+            sunrise = datetime.fromisoformat(amanecer[0]).strftime("%H:%M")
+            sunset = datetime.fromisoformat(atardecer[0]).strftime("%H:%M")
+            linea_sol = f"   Amanecer: {sunrise} | Atardecer: {sunset}\n"
+        except (IndexError, ValueError, TypeError):
+            logger.warning("Sin datos de amanecer/atardecer, se omite la línea")
         
         # Construir mensaje
         msg = "🚨 <b>MONITOREO PROTECCIÓN CIVIL TEMPOAL</b> 🚨\n"
@@ -202,7 +211,7 @@ def generar_mensaje_completo(data, alertas, eventos_especiales):
         msg += f"   Sensación térmica: {round(sensacion, 1)}°C\n"
         msg += f"   Humedad: {round(humedad)}%\n"
         msg += f"   Viento: {round(viento_actual, 1)} km/h\n"
-        msg += f"   Amanecer: {sunrise} | Atardecer: {sunset}\n"
+        msg += linea_sol
         
         msg += "\n━━━━━━━━━━━━━━━━━━━━\n"
         
