@@ -70,14 +70,27 @@ def _datos_ejemplo():
             'cloud_cover': nubes,
         },
         'daily': {
-            'time': ['2026-11-24'],
-            'temperature_2m_max': [21.0],
-            'temperature_2m_min': [16.0],
-            'precipitation_probability_max': [80],
-            'precipitation_sum': [5.0],
-            'wind_speed_10m_max': [30.0],
-            'wind_direction_10m_dominant': [350.0],
-            'weather_code': [61],
+            'time': ['2026-11-24', '2026-11-25', '2026-11-26', '2026-11-27',
+                     '2026-11-28', '2026-11-29', '2026-11-30'],
+            'temperature_2m_max': [21.0, 22.0, 23.0, 22.0, 21.0, 20.0, 20.0],
+            'temperature_2m_min': [16.0, 15.0, 16.0, 15.0, 14.0, 14.0, 13.0],
+            'apparent_temperature_max': [20.0, 21.0, 22.0, 21.0, 20.0, 19.0, 19.0],
+            'apparent_temperature_min': [15.0, 14.0, 15.0, 14.0, 13.0, 13.0, 12.0],
+            'sunrise': ['2026-11-24T06:30', '2026-11-25T06:31',
+                        '2026-11-26T06:31', '2026-11-27T06:32',
+                        '2026-11-28T06:32', '2026-11-29T06:33',
+                        '2026-11-30T06:33'],
+            'sunset': ['2026-11-24T17:45', '2026-11-25T17:45',
+                       '2026-11-26T17:45', '2026-11-27T17:45',
+                       '2026-11-28T17:44', '2026-11-29T17:44',
+                       '2026-11-30T17:44'],
+            'uv_index_max': [5.0, 6.0, 6.0, 5.0, 5.0, 4.0, 4.0],
+            'precipitation_probability_max': [80, 60, 40, 30, 20, 10, 10],
+            'precipitation_sum': [5.0, 3.0, 1.0, 0.5, 0.0, 0.0, 0.0],
+            'wind_speed_10m_max': [30.0, 25.0, 20.0, 18.0, 15.0, 12.0, 12.0],
+            'wind_gusts_10m_max': [45.0, 38.0, 30.0, 27.0, 22.0, 18.0, 18.0],
+            'wind_direction_10m_dominant': [350.0, 340.0, 20.0, 45.0, 90.0, 90.0, 90.0],
+            'weather_code': [61, 61, 3, 2, 1, 0, 0],
         },
         'current': {
             'temperature_2m': 17.0,
@@ -256,6 +269,29 @@ class TestCuentaRegresiva(unittest.TestCase):
         self.assertIsNone(texto_cuenta_regresiva(date(2026, 6, 15)))
         self.assertIsNone(texto_cuenta_regresiva(date(2026, 11, 24)))
         self.assertIsNone(texto_cuenta_regresiva(date(2026, 9, 30)))
+
+
+class TestMensajeCompleto(unittest.TestCase):
+    """El reporte de texto no debe morir por un campo opcional faltante."""
+
+    def test_con_amanecer(self):
+        from src.formato import generar_mensaje_completo
+        mensaje = generar_mensaje_completo(_datos_ejemplo(), [], [])
+        self.assertIsNotNone(mensaje)
+        self.assertIn("Amanecer: 06:30", mensaje)
+        self.assertIn("MONITOREO PROTECCIÓN CIVIL TEMPOAL", mensaje)
+
+    def test_sin_amanecer_sigue_generando(self):
+        # Regresión: antes, si faltaban sunrise/sunset, todo el reporte
+        # fallaba y main.py terminaba sin enviar nada
+        from src.formato import generar_mensaje_completo
+        datos = _datos_ejemplo()
+        del datos['daily']['sunrise']
+        del datos['daily']['sunset']
+        mensaje = generar_mensaje_completo(datos, [], [])
+        self.assertIsNotNone(mensaje)
+        self.assertNotIn("Amanecer:", mensaje)
+        self.assertIn("MONITOREO PROTECCIÓN CIVIL TEMPOAL", mensaje)
 
 
 class TestDecoracionDiciembre(unittest.TestCase):
