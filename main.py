@@ -15,8 +15,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
 from src.clima import obtener_datos_climaticos, obtener_condiciones_actuales
 from src.alertas import analizar_riesgos_climaticos, detectar_eventos_especiales
-from src.formato import generar_mensaje_completo
-from src.telegram_bot import enviar_mensaje_telegram, validar_configuracion_telegram
+from src.formato import generar_mensaje_completo, generar_caption_tarjeta
+from src.tarjeta import generar_tarjeta_diaria
+from src.telegram_bot import enviar_mensaje_telegram, enviar_foto_telegram, validar_configuracion_telegram
 from src.utils import logger
 
 def main():
@@ -64,9 +65,31 @@ def main():
         sys.exit(1)
     
     logger.info(f"✅ Reporte generado ({len(mensaje)} caracteres)")
-    
-    # 5. Enviar a Telegram
+
+    # 4b. Generar tarjeta diaria con imagen (no bloquea el reporte de texto)
+    logger.info("\n📋 PASO 4b: Generando tarjeta diaria...")
+    ruta_tarjeta = None
+    caption_tarjeta = None
+    try:
+        ruta_logo = os.path.join(os.path.dirname(__file__), 'logo.png')
+        ruta_tarjeta = generar_tarjeta_diaria(
+            datos, "tarjeta_clima.png",
+            ruta_logo=ruta_logo if os.path.exists(ruta_logo) else None)
+        if ruta_tarjeta:
+            caption_tarjeta = generar_caption_tarjeta(datos)
+        else:
+            logger.warning("⚠️  No se pudo generar la tarjeta, se enviará solo texto")
+    except Exception as e:
+        logger.warning(f"⚠️  Error generando tarjeta (se enviará solo texto): {e}")
+        ruta_tarjeta = None
+
+    # 5. Enviar a Telegram: primero la tarjeta con sus conclusiones y
+    # después el reporte de texto completo (la tarjeta es opcional: si
+    # falla su envío, el reporte de texto sigue siendo el envío principal)
     logger.info("\n📋 PASO 5: Enviando reporte a Telegram...")
+    if ruta_tarjeta:
+        if not enviar_foto_telegram(ruta_tarjeta, caption_tarjeta):
+            logger.warning("⚠️  No se pudo enviar la tarjeta, continúa el texto")
     exito = enviar_mensaje_telegram(mensaje, max_reintentos=3)
     
     # 6. Resultado final
