@@ -13,9 +13,20 @@ import os
 # Agregar src al path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
-from src.clima import obtener_datos_climaticos, obtener_condiciones_actuales
+from src.clima import (
+    obtener_datos_climaticos,
+    obtener_condiciones_actuales,
+    obtener_datos_ensemble,
+    obtener_datos_ensemble_navidad,
+)
 from src.alertas import analizar_riesgos_climaticos, detectar_eventos_especiales
 from src.formato import generar_mensaje_completo, generar_caption_tarjeta
+from src.grafica_navidad import (
+    calcular_probabilidades_frio,
+    generar_grafica_navidad,
+    rango_navidad,
+    temporada_navidad,
+)
 from src.tarjeta import generar_tarjeta_diaria
 from src.telegram_bot import enviar_mensaje_telegram, enviar_foto_telegram, validar_configuracion_telegram
 from src.utils import logger
@@ -43,6 +54,19 @@ def main():
         logger.error("   El sistema se detendrá sin enviar reporte")
         sys.exit(1)
     
+    # 2b. Ensemble ECMWF (opcional, best-effort: si falla, el reporte
+    # sigue con los datos deterministas y la heurística de confianza)
+    logger.info("\n📋 PASO 2b: Obteniendo ensemble (probabilidades reales)...")
+    ensemble = None
+    try:
+        ensemble = obtener_datos_ensemble()
+        if ensemble:
+            logger.info("✅ Ensemble ECMWF recibido")
+        else:
+            logger.warning("⚠️  Sin ensemble, se usará la heurística de confianza")
+    except Exception as e:
+        logger.warning(f"⚠️  Ensemble no disponible ({e}), se sigue sin él")
+
     # 3. Analizar riesgos
     logger.info("\n📋 PASO 3: Analizando riesgos meteorológicos...")
     alertas = analizar_riesgos_climaticos(datos['daily'])
@@ -74,14 +98,37 @@ def main():
         ruta_logo = os.path.join(os.path.dirname(__file__), 'logo.png')
         ruta_tarjeta = generar_tarjeta_diaria(
             datos, "tarjeta_clima.png",
-            ruta_logo=ruta_logo if os.path.exists(ruta_logo) else None)
+            ruta_logo=ruta_logo if os.path.exists(ruta_logo) else None,
+            ensemble=ensemble)
         if ruta_tarjeta:
-            caption_tarjeta = generar_caption_tarjeta(datos)
+            caption_tarjeta = generar_caption_tarjeta(datos, ensemble=ensemble)
         else:
             logger.warning("⚠️  No se pudo generar la tarjeta, se enviará solo texto")
     except Exception as e:
         logger.warning(f"⚠️  Error generando tarjeta (se enviará solo texto): {e}")
         ruta_tarjeta = None
+
+    # 4c. Gráfica de Navidad (opcional, best-effort: solo en temporada
+    # y solo si hay datos del ensemble GFS; nunca bloquea el reporte)
+    logger.info("\n📋 PASO 4c: Gráfica de Navidad (si es temporada)...")
+    ruta_navidad = None
+    if temporada_navidad():
+        try:
+            datos_gfs = obtener_datos_ensemble_navidad()
+            if datos_gfs:
+                rango = rango_navidad()
+                if rango:
+                    probs = calcular_probabilidades_frio(
+                        datos_gfs, rango[0], rango[1])
+                    if probs:
+                        ruta_navidad = generar_grafica_navidad(
+                            probs, "grafica_navidad.png")
+            if not ruta_navidad:
+                logger.warning("⚠️  Sin gráfica de Navidad, el reporte sigue igual")
+        except Exception as e:
+            logger.warning(f"⚠️  Gráfica de Navidad no disponible ({e})")
+    else:
+        logger.info("   Fuera de temporada, se omite")
 
     # 5. Enviar a Telegram: primero la tarjeta con sus conclusiones y
     # después el reporte de texto completo (la tarjeta es opcional: si
@@ -90,6 +137,13 @@ def main():
     if ruta_tarjeta:
         if not enviar_foto_telegram(ruta_tarjeta, caption_tarjeta):
             logger.warning("⚠️  No se pudo enviar la tarjeta, continúa el texto")
+    if ruta_navidad:
+        caption_navidad = (
+            "🎄 <b>¿FRÍO EN NAVIDAD?</b> Probabilidad de mínima menor a "
+            "12 °C rumbo al 25 de diciembre, según el ensemble GFS "
+            "(31 miembros). A 30 días la incertidumbre es muy alta.")
+        if not enviar_foto_telegram(ruta_navidad, caption_navidad):
+            logger.warning("⚠️  No se pudo enviar la gráfica de Navidad")
     exito = enviar_mensaje_telegram(mensaje, max_reintentos=3)
     
     # 6. Resultado final
