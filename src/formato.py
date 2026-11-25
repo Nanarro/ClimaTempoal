@@ -396,11 +396,22 @@ def resumir_bloque(datos, hora_inicio, hora_fin):
     }
 
 
-def obtener_bloques_diarios(datos):
-    """Devuelve los 3 bloques del día (mañana, tarde, noche) con su resumen."""
+def obtener_bloques_diarios(datos, ensemble=None):
+    """
+    Devuelve los 3 bloques del día (mañana, tarde, noche) con su resumen.
+
+    Si se pasa el `ensemble` (dict de la Ensemble API ECMWF), cada bloque
+    trae además sus estadísticas reales: 'prob_lluvia_ens' (% de miembros
+    con lluvia), 'temp_media_ens' y 'temp_spread' (desviación estándar
+    entre miembros). En ese caso 'prob_max' pasa a ser la probabilidad
+    real del ensemble (la determinista queda en 'prob_max_det'), para
+    que tarjeta, etiquetas y conclusiones hablen con un solo número.
+    Sin ensemble, todo sigue como antes (heurística).
+    """
     daily = datos.get('daily', {}) or {}
     lluvias_7d = daily.get('precipitation_sum') or []
     lluvia_7d = round(sum(v for v in lluvias_7d if v is not None), 1)
+    hoy = (daily.get('time') or [None])[0]
     bloques = []
     for nombre, horas, inicio, fin in BLOQUES_DIA:
         resumen = resumir_bloque(datos, inicio, fin)
@@ -408,8 +419,101 @@ def obtener_bloques_diarios(datos):
         resumen['horas'] = horas
         # Lluvia acumulada de la semana (mm): sirve para detectar sequía
         resumen['lluvia_7d'] = lluvia_7d
+        if ensemble is not None:
+            ens = extraer_ensemble_bloque(ensemble, inicio, fin, hoy)
+            if ens:
+                resumen.update(ens)
+                resumen['prob_max_det'] = resumen.get('prob_max')
+                resumen['prob_max'] = ens['prob_lluvia_ens']
         bloques.append(resumen)
     return bloques
+
+
+# ---------------------------------------------------------------------------
+# Ensemble: probabilidades reales a partir de los miembros
+# ---------------------------------------------------------------------------
+
+# Umbral de lluvia medible (mm acumulados en el bloque). Un miembro
+# "dice que llueve" si su precipitación en el bloque supera esto.
+# 0.1 mm es el mínimo que registra una estación: menos que eso es
+# rocío, no lluvia.
+UMBRAL_LLUVIA_ENSEMBLE_MM = 0.1
+
+
+def _claves_miembros(seccion, variable):
+    """Claves '<variable>_memberNN' ordenadas (miembros perturbados)."""
+    prefijo = variable + "_member"
+    return sorted(k for k in (seccion or {}) if k.startswith(prefijo))
+
+
+def _desviacion_estandar(valores):
+    """Desviación estándar poblacional, o 0.0 si no hay dispersión."""
+    if len(valores) < 2:
+        return 0.0
+    media = sum(valores) / len(valores)
+    return (sum((v - media) ** 2 for v in valores) / len(valores)) ** 0.5
+
+
+def extraer_ensemble_bloque(ensemble, hora_inicio, hora_fin, fecha_hoy):
+    """
+    Resume el ensemble ECMWF para un bloque horario del día actual.
+
+    Devuelve None si no hay datos útiles (sin claves de miembro, sin
+    horas del bloque o sin valores válidos).
+
+    - prob_lluvia_ens: % de miembros cuya lluvia acumulada en el
+      bloque supera UMBRAL_LLUVIA_ENSEMBLE_MM (0.1 mm).
+    - temp_media_ens: media de las temperaturas medias de bloque de
+      cada miembro.
+    - temp_spread: desviación estándar entre miembros de esa media
+      (°C). Es la medida real de incertidumbre: poca dispersión =
+      los miembros coinciden; mucha = no se ponen de acuerdo.
+    - n_miembros: cuántos miembros participaron.
+    """
+    hourly = (ensemble or {}).get('hourly', {}) or {}
+    tiempos = hourly.get('time', []) or []
+    claves_temp = _claves_miembros(hourly, 'temperature_2m')
+    claves_lluvia = _claves_miembros(hourly, 'precipitation')
+    if not claves_temp or not claves_lluvia or not fecha_hoy:
+        return None
+
+    indices = []
+    for i, t in enumerate(tiempos):
+        try:
+            dt = datetime.fromisoformat(t)
+        except (ValueError, TypeError):
+            continue
+        if dt.strftime("%Y-%m-%d") == fecha_hoy \
+                and hora_inicio <= dt.hour < hora_fin:
+            indices.append(i)
+    if not indices:
+        return None
+
+    medias_temp = []
+    con_lluvia = 0
+    n = 0
+    for kt, kl in zip(claves_temp, claves_lluvia):
+        arr_t = hourly.get(kt) or []
+        arr_p = hourly.get(kl) or []
+        temps = [arr_t[i] for i in indices
+                 if i < len(arr_t) and arr_t[i] is not None]
+        precs = [arr_p[i] for i in indices
+                 if i < len(arr_p) and arr_p[i] is not None]
+        if not temps or not precs:
+            continue
+        medias_temp.append(sum(temps) / len(temps))
+        if sum(precs) > UMBRAL_LLUVIA_ENSEMBLE_MM:
+            con_lluvia += 1
+        n += 1
+    if n == 0:
+        return None
+
+    return {
+        'prob_lluvia_ens': round(100 * con_lluvia / n),
+        'temp_media_ens': round(sum(medias_temp) / len(medias_temp), 1),
+        'temp_spread': round(_desviacion_estandar(medias_temp), 1),
+        'n_miembros': n,
+    }
 
 
 def etiqueta_bloque(resumen):
@@ -448,11 +552,40 @@ def nivel_confianza(bloques):
     Nivel de confianza del pronóstico (BAJA / MEDIA / ALTA) y segmentos
     llenos de 4 para la barra de la tarjeta.
 
-    Heurística: si la probabilidad de lluvia varía mucho entre bloques o
-    el viento cambia de dirección varias veces en el día, el pronóstico
-    es menos confiable (como cuando MeteoAlert marca BAJA por la
-    incertidumbre en horarios y distribución de la lluvia).
+    Con ensemble (los bloques traen 'temp_spread' y 'prob_lluvia_ens'),
+    la confianza es REAL: mide cuánto coinciden los miembros.
+    - ALTA (4): dispersión media de temperatura ≤ 1.5 °C entre
+      miembros Y en todos los bloques al menos el 80% de los miembros
+      coincide en si llueve o no.
+    - BAJA (2): dispersión media ≥ 3.0 °C (los miembros no se ponen
+      de acuerdo en la temperatura) O en algún bloque el acuerdo sobre
+      lluvia baja del 60% (casi un volado).
+    - MEDIA (3): el resto.
+    Los umbrales: 1.5 °C es un acuerdo estrecho para 24 h; 3 °C es
+    un desacuerdo grande; 80% es consenso fuerte y 60% es casi azar.
+
+    Sin ensemble, se usa la heurística de siempre (variación de la
+    probabilidad de lluvia entre bloques + cambios de dirección del
+    viento), para que la tarjeta nunca se quede sin barra.
     """
+    spreads = [b.get('temp_spread') for b in bloques
+               if b.get('temp_spread') is not None]
+    probs_ens = [b.get('prob_lluvia_ens') for b in bloques
+                 if b.get('prob_lluvia_ens') is not None]
+    if spreads and probs_ens:
+        spread_prom = sum(spreads) / len(spreads)
+        acuerdo_min = min(max(p, 100 - p) for p in probs_ens)
+        if spread_prom <= 1.5 and acuerdo_min >= 80:
+            return ("ALTA", 4)
+        if spread_prom >= 3.0 or acuerdo_min < 60:
+            return ("BAJA", 2)
+        return ("MEDIA", 3)
+
+    # Heurística (respaldo sin ensemble): si la probabilidad de lluvia
+    # varía mucho entre bloques o el viento cambia de dirección varias
+    # veces en el día, el pronóstico es menos confiable (como cuando
+    # MeteoAlert marca BAJA por la incertidumbre en horarios y
+    # distribución de la lluvia).
     probs = [b.get('prob_max') or 0 for b in bloques]
     spread = (max(probs) - min(probs)) if probs else 0
     dirs = {b.get('viento_dir') for b in bloques if b.get('viento_dir')}
@@ -526,13 +659,14 @@ def _frase_temperatura(resumen):
     return frase
 
 
-def generar_conclusiones_bloques(datos):
+def generar_conclusiones_bloques(datos, ensemble=None):
     """
     Genera una conclusión narrada por bloque (mañana, tarde, noche),
     estilo MeteoAlert. Devuelve una lista de 3 textos en HTML para Telegram.
+    Con `ensemble`, las conclusiones usan la probabilidad real de lluvia.
     """
     try:
-        bloques = obtener_bloques_diarios(datos)
+        bloques = obtener_bloques_diarios(datos, ensemble=ensemble)
         conclusiones = []
         for bloque in bloques:
             partes = [_frase_lluvia(bloque)]
@@ -552,15 +686,16 @@ def generar_conclusiones_bloques(datos):
         return []
 
 
-def generar_caption_tarjeta(datos):
+def generar_caption_tarjeta(datos, ensemble=None):
     """
     Caption corto para la foto de la tarjeta (límite de Telegram: 1024
     caracteres). Incluye la fecha y las 3 conclusiones por bloque.
+    Con `ensemble`, las conclusiones usan la probabilidad real de lluvia.
     """
     try:
         fecha = formatear_fecha_completa().split(" - ")[0]
         lineas = [f"📅 <b>{fecha} — TEMPOAL</b>", ""]
-        lineas.extend(generar_conclusiones_bloques(datos))
+        lineas.extend(generar_conclusiones_bloques(datos, ensemble=ensemble))
         caption = "\n".join(lineas)
         if len(caption) <= 1000:
             return caption
