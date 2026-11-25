@@ -29,8 +29,18 @@ os.environ.setdefault('TELEGRAM_TOKEN', 'x' * 45)
 os.environ.setdefault('TELEGRAM_CHAT_ID', '-1000000000000')
 
 from src.alertas import analizar_riesgos_climaticos, detectar_eventos_especiales
-from src.clima import obtener_datos_climaticos
+from src.clima import (
+    obtener_datos_climaticos,
+    obtener_datos_ensemble,
+    obtener_datos_ensemble_navidad,
+)
 from src.formato import generar_caption_tarjeta, generar_mensaje_completo
+from src.grafica_navidad import (
+    calcular_probabilidades_frio,
+    generar_grafica_navidad,
+    rango_navidad,
+    temporada_navidad,
+)
 from src.tarjeta import generar_tarjeta_diaria
 from src.telegram_bot import validar_configuracion_telegram
 
@@ -108,6 +118,17 @@ def main():
         print("  ⚠️  Open-Meteo no respondió, uso datos de ejemplo")
         datos = _datos_ejemplo()
 
+    print("PASO 2b: Obteniendo ensemble ECMWF (probabilidades reales)...")
+    ensemble = None
+    try:
+        ensemble = obtener_datos_ensemble()
+    except Exception as e:
+        print(f"  ⚠️  Ensemble no disponible ({e})")
+    if ensemble:
+        print("  ✅ Ensemble real (ECMWF)")
+    else:
+        print("  ⚠️  Sin ensemble: la tarjeta usará la heurística de siempre")
+
     print("PASO 3: Analizando riesgos...")
     alertas = analizar_riesgos_climaticos(datos['daily'])
     eventos = detectar_eventos_especiales(datos['hourly'])
@@ -127,13 +148,36 @@ def main():
     ruta_logo = os.path.join(os.path.dirname(__file__), '..', 'logo.png')
     ruta_tarjeta = generar_tarjeta_diaria(
         datos, 'tarjeta_prueba.png',
-        ruta_logo=ruta_logo if os.path.exists(ruta_logo) else None)
+        ruta_logo=ruta_logo if os.path.exists(ruta_logo) else None,
+        ensemble=ensemble)
     if ruta_tarjeta:
-        caption = generar_caption_tarjeta(datos)
+        caption = generar_caption_tarjeta(datos, ensemble=ensemble)
         print(f"  ✅ Tarjeta generada, caption {len(caption)} caracteres")
     else:
         errores.append("no se pudo generar la tarjeta")
         print("  ❌ FALLÓ")
+
+    print("PASO 4c: Gráfica de Navidad (si es temporada)...")
+    if temporada_navidad():
+        ruta_navidad = None
+        try:
+            datos_gfs = obtener_datos_ensemble_navidad()
+            if datos_gfs:
+                rango = rango_navidad()
+                if rango:
+                    probs = calcular_probabilidades_frio(
+                        datos_gfs, rango[0], rango[1])
+                    if probs:
+                        ruta_navidad = generar_grafica_navidad(
+                            probs, 'grafica_navidad_prueba.png')
+        except Exception as e:
+            print(f"  ⚠️  Gráfica no disponible ({e})")
+        if ruta_navidad:
+            print("  ✅ Gráfica de Navidad generada")
+        else:
+            print("  ⚠️  Sin gráfica (sin datos GFS), el resto sigue igual")
+    else:
+        print("  ⏭️  Fuera de temporada, se omite")
 
     print("PASO 5: OMITIDO — nada se envió a Telegram")
     print()
