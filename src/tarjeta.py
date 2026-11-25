@@ -290,7 +290,7 @@ def _fecha_tarjeta():
     return f"{dia} {ahora.day} {mes} {ahora.year}"
 
 
-def generar_tarjeta_diaria(datos, ruta_salida, ruta_logo=None):
+def generar_tarjeta_diaria(datos, ruta_salida, ruta_logo=None, ensemble=None):
     """
     Genera la tarjeta diaria de pronóstico y la guarda como PNG.
 
@@ -298,6 +298,9 @@ def generar_tarjeta_diaria(datos, ruta_salida, ruta_logo=None):
         datos: Datos de Open-Meteo (dict con hourly/daily/current).
         ruta_salida: Ruta del PNG a generar.
         ruta_logo: Ruta opcional del logo a mostrar en el encabezado.
+        ensemble: Dict opcional de la Ensemble API ECMWF. Si viene, el
+            % de lluvia y la barra de confianza son reales (acuerdo
+            entre miembros); si no, se usa la heurística de siempre.
 
     Returns:
         str: La ruta del PNG generado, o None si falló.
@@ -306,7 +309,7 @@ def generar_tarjeta_diaria(datos, ruta_salida, ruta_logo=None):
         if not datos:
             logger.error("Sin datos meteorológicos para generar la tarjeta")
             return None
-        bloques = obtener_bloques_diarios(datos)
+        bloques = obtener_bloques_diarios(datos, ensemble=ensemble)
         confianza, segmentos = nivel_confianza(bloques)
         color_confianza = {
             "BAJA": COLOR_CONFIANZA_BAJA,
@@ -515,8 +518,11 @@ def generar_tarjeta_diaria(datos, ruta_salida, ruta_logo=None):
         # --- Pie ---
         fuente_pie = _cargar_fuente(tamano=18)
         hora_gen = obtener_hora_mexico().strftime("%H:%M")
+        con_ensemble = any('prob_lluvia_ens' in b for b in bloques)
+        fuente_txt = ("Open-Meteo · Ensemble ECMWF" if con_ensemble
+                      else "Open-Meteo")
         _texto_centrado(draw, ANCHO // 2, ALTO - 40,
-                        f"Fuente: Open-Meteo  •  Generado {hora_gen} h  •  "
+                        f"Fuente: {fuente_txt}  •  Generado {hora_gen} h  •  "
                         f"Protección Civil Tempoal",
                         fuente_pie, COLOR_TEXTO_SUAVE)
 
