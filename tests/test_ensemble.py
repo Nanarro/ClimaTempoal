@@ -136,7 +136,7 @@ def _bloques_ens(spreads, probs):
     """Bloques sintéticos con estadísticas de ensemble."""
     return [
         {'nombre': n, 'temp_spread': s, 'prob_lluvia_ens': p}
-        for n, s, p in zip(("MAÑANA", "TARDE", "NOCHE"), spreads, probs)
+        for n, s, p in zip(("POR LA MAÑANA", "TARDE", "NOCHE"), spreads, probs)
     ]
 
 
