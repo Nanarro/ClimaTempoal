@@ -109,7 +109,15 @@ class TestBloquesDiarios(unittest.TestCase):
         bloques = obtener_bloques_diarios(_datos_ejemplo())
         self.assertEqual(len(bloques), 3)
         self.assertEqual([b['nombre'] for b in bloques],
-                         ["MAÑANA", "TARDE", "NOCHE"])
+                         ["POR LA MAÑANA", "TARDE", "NOCHE"])
+
+    def test_conclusion_manana_dice_por_la_manana(self):
+        """La viñeta de la mañana dice 'POR LA MAÑANA', no 'MAÑANA':
+        'mañana' sola se confunde con el día siguiente."""
+        conclusiones = generar_conclusiones_bloques(_datos_ejemplo())
+        self.assertEqual(len(conclusiones), 3)
+        self.assertIn("<b>POR LA MAÑANA (06–12 h):</b>",
+                      conclusiones[0])
 
     def test_bloque_manana_lluvioso(self):
         bloques = obtener_bloques_diarios(_datos_ejemplo())
@@ -174,7 +182,7 @@ class TestTarjetaImagen(unittest.TestCase):
 def _bloque_base(**cambios):
     """Bloque sintético con valores por defecto (día despejado)."""
     bloque = {
-        'nombre': 'MAÑANA',
+        'nombre': 'POR LA MAÑANA',
         'codigo': 0,
         'prob_max': 0,
         'temp_max': 25.0,
