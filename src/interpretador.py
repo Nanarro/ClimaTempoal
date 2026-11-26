@@ -73,6 +73,22 @@ ESPECIAL_TEMP_MIN_FRIO_C = 10     # mínima del día (mañana muy fría)
 ESPECIAL_LLUVIA_DIA_MM = 30       # lluvia acumulada del día
 ESPECIAL_CAIDA_PRESION_HPA = 5    # caída de presión en el día
 
+# Nombre del bloque para usar dentro de una frase ("lluvia en la
+# mañana", "lluvia de la tarde"). El nombre visible es "POR LA
+# MAÑANA" (para no confundirlo con "mañana" = el día siguiente),
+# pero dentro de una frase se usa "mañana" ("en la mañana").
+NOMBRE_FRASE = {
+    'POR LA MAÑANA': 'mañana',
+    'TARDE': 'tarde',
+    'NOCHE': 'noche',
+}
+
+
+def _nombre_frase(bloque):
+    """Nombre del bloque para usar dentro de una frase."""
+    nombre = (bloque.get('nombre') or '').upper()
+    return NOMBRE_FRASE.get(nombre, nombre.lower())
+
 
 def _num(valor, decimales=0):
     """Número redondeado (entero si decimales=0), o None si no hay valor."""
@@ -282,7 +298,7 @@ def resumen_dia(bloques):
     if n_lluvia >= 2:
         base = "día de lluvias"
     elif n_lluvia == 1:
-        nombre = next(b.get('nombre', '').lower() for b in bloques
+        nombre = next(_nombre_frase(b) for b in bloques
                       if (_num(b.get('prob_max')) or 0) >= 70)
         base = f"lluvia en la {nombre}"
     elif max_prob >= 40:
@@ -333,7 +349,7 @@ def recomendacion_practica(bloques):
         return None
     recs = []
 
-    lluviosos = [b.get('nombre', '').lower() for b in bloques
+    lluviosos = [_nombre_frase(b) for b in bloques
                  if (_num(b.get('prob_max')) or 0) >= 70]
     if lluviosos:
         if len(lluviosos) >= 3:
