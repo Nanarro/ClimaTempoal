@@ -265,7 +265,7 @@ def generar_mensaje_completo(data, alertas, eventos_especiales,
 # ---------------------------------------------------------------------------
 
 BLOQUES_DIA = [
-    ("MAÑANA", "06–12 h", 6, 12),
+    ("POR LA MAÑANA", "06–12 h", 6, 12),
     ("TARDE", "12–18 h", 12, 18),
     ("NOCHE", "18–00 h", 18, 24),
 ]
