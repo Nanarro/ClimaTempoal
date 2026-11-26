@@ -44,7 +44,7 @@ FECHA = "2026-11-26"
 def _bloque(**cambios):
     """Bloque sintético con valores por defecto (día tranquilo)."""
     bloque = {
-        'nombre': 'MAÑANA',
+        'nombre': 'POR LA MAÑANA',
         'horas': '06–12 h',
         'codigo': 3,
         'prob_max': 0,
@@ -68,7 +68,7 @@ def _bloque(**cambios):
 def _bloques_hoy():
     """Los 3 bloques de hoy, día lluvioso como el 26 de noviembre."""
     return [
-        _bloque(nombre='MAÑANA', prob_max=38, lluvia_mm=1.0,
+        _bloque(nombre='POR LA MAÑANA', prob_max=38, lluvia_mm=1.0,
                 temp_media=15.0, sensacion_media=15.0,
                 temp_min=12.0, temp_max=17.0,
                 viento_dir='OESTE', viento_min=4.0, viento_max=6.0,
