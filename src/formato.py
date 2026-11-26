@@ -3,6 +3,7 @@ Módulo de formateo de mensajes para Telegram
 """
 
 from datetime import datetime
+from .interpretador import interpretar_bloque, interpretar_dia
 from .utils import logger, DIAS_ESP, formatear_fecha_completa
 
 def obtener_icono_clima(codigo):
@@ -165,21 +166,28 @@ def generar_estadisticas_semana(daily):
         logger.error(f"Error generando estadísticas: {e}")
         return ""
 
-def generar_mensaje_completo(data, alertas, eventos_especiales):
+def generar_mensaje_completo(data, alertas, eventos_especiales,
+                            ensemble=None):
     """
-    Genera el mensaje completo formateado para Telegram
+    Genera el mensaje completo formateado para Telegram.
+
+    Desde 2026-11-26 el texto es inteligente y no lista datos
+    sueltos: el interpretador decide qué aparece y con qué palabras
+    (el viento flojo y la presión normal no se mencionan; si importan,
+    se dice qué causan o anuncian). Estructura seria: encabezado,
+    resumen del día, bloques mañana/tarde/noche, comparación especial
+    solo en casos excepcionales, presión del día si anuncia algo,
+    recomendación práctica, alertas y pie con la fuente.
+
+    Con `ensemble`, las probabilidades de lluvia (y de lluvia fuerte)
+    son las reales del ensemble ECMWF; sin él, las deterministas.
+    El parámetro es opcional para no romper a quien llama sin él
+    (main.py debe pasar ensemble=ensemble para que el texto use las
+    probabilidades reales, como ya hace el caption de la tarjeta).
     """
     try:
-        current = data['current']
-        hourly = data['hourly']
         daily = data['daily']
-        
-        # Condiciones actuales
-        temp_actual = current.get('temperature_2m', 0)
-        sensacion = current.get('apparent_temperature', 0)
-        humedad = current.get('relative_humidity_2m', 0)
-        viento_actual = current.get('wind_speed_10m', 0)
-        
+
         # Sol (opcional: si Open-Meteo no trae amanecer/atardecer, se
         # omite la línea y el reporte sigue; antes un solo campo
         # faltante tumbaba todo el mensaje)
@@ -192,86 +200,62 @@ def generar_mensaje_completo(data, alertas, eventos_especiales):
             linea_sol = f"   Amanecer: {sunrise} | Atardecer: {sunset}\n"
         except (IndexError, ValueError, TypeError):
             logger.warning("Sin datos de amanecer/atardecer, se omite la línea")
-        
+
+        bloques = obtener_bloques_diarios(data, ensemble=ensemble)
+        dia = interpretar_dia(bloques, daily,
+                              confianza=nivel_confianza(bloques)[0])
+
         # Construir mensaje
         msg = "🚨 <b>MONITOREO PROTECCIÓN CIVIL TEMPOAL</b> 🚨\n"
         msg += f"📅 <i>{formatear_fecha_completa()}</i>\n\n"
-        
-        # Resumen ejecutivo
-        msg += generar_resumen_ejecutivo(
-            {'temperatura': temp_actual, 'sensacion': sensacion, 'humedad': humedad},
-            daily
-        )
-        
-        msg += "\n━━━━━━━━━━━━━━━━━━━━\n\n"
-        
-        # Condiciones actuales
-        msg += "🌡️ <b>CONDICIONES ACTUALES:</b>\n"
-        msg += f"   Temperatura: {round(temp_actual, 1)}°C\n"
-        msg += f"   Sensación térmica: {round(sensacion, 1)}°C\n"
-        msg += f"   Humedad: {round(humedad)}%\n"
-        msg += f"   Viento: {round(viento_actual, 1)} km/h\n"
-        msg += linea_sol
-        
-        msg += "\n━━━━━━━━━━━━━━━━━━━━\n"
-        
-        # Pronóstico horario (24h)
-        msg += "\n<b>PRONÓSTICO HORARIO (24h):</b>\n"
-        
-        times = hourly['time']
-        temps = hourly['temperature_2m']
-        sensaciones = hourly['apparent_temperature']
-        probs = hourly['precipitation_probability']
-        vientos = hourly['wind_gusts_10m']
-        uv_indices = hourly.get('uv_index', [0] * len(times))
-        
-        for i in range(min(24, len(times))):
-            # Mostrar cada 3 horas o eventos importantes
-            if i % 3 == 0 or probs[i] > 60 or vientos[i] > 40 or uv_indices[i] > 8:
-                try:
-                    dt = datetime.fromisoformat(times[i])
-                    hora = dt.strftime("%H")
-                    msg += formatear_linea_horaria(
-                        hora, temps[i], sensaciones[i],
-                        probs[i], vientos[i], uv_indices[i]
-                    )
-                except Exception as e:
-                    logger.warning(f"Error formateando hora {i}: {e}")
-        
-        msg += "\n━━━━━━━━━━━━━━━━━━━━\n"
-        
-        # Pronóstico 3 días
-        msg += generar_pronostico_3_dias(daily)
-        
-        msg += "\n━━━━━━━━━━━━━━━━━━━━\n"
-        
+
+        # Resumen decisivo del día (+ advertencia si el pronóstico
+        # es poco seguro)
+        msg += f"{dia['resumen']}\n"
+        if dia['advertencia']:
+            msg += f"{dia['advertencia']}\n"
+
+        # Bloques mañana / tarde / noche (mismo texto que el caption)
+        msg += "\n"
+        for conclusion in generar_conclusiones_bloques(
+                data, ensemble=ensemble):
+            msg += f"{conclusion}\n"
+
+        # Comparación especial (solo días excepcionales) y presión
+        if dia['especial']:
+            msg += f"\n📌 {dia['especial']}\n"
+        if dia['presion']:
+            msg += f"\n{dia['presion']}\n"
+
+        # Recomendación práctica, solo cuando aplica
+        if dia['recomendacion']:
+            msg += f"\n💡 {dia['recomendacion']}\n"
+
         # Eventos especiales
         if eventos_especiales:
             msg += "\n⚡ <b>EVENTOS ESPECIALES (24h):</b>\n\n"
             for evento in eventos_especiales:
                 msg += f"{evento}\n\n"
-            msg += "━━━━━━━━━━━━━━━━━━━━\n"
-        
+
         # Alertas
         if alertas:
             msg += "\n📢 <b>⚠️ ALERTAS METEOROLÓGICAS:</b>\n\n"
             for alerta in alertas:
                 msg += f"{alerta}\n\n"
         else:
-            msg += "\n✅ <b>Sin alertas meteorológicas esta semana</b>\n"
-        
-        msg += "\n━━━━━━━━━━━━━━━━━━━━\n"
-        
-        # Estadísticas
-        msg += generar_estadisticas_semana(daily)
-        
-        msg += "\n━━━━━━━━━━━━━━━━━━━━\n"
-        msg += "\n📡 <i>Fuente: Open-Meteo (GFS/ECMWF)</i>\n"
-        msg += "⚙️ <i>Sistema Automatizado v2.0</i>\n"
+            msg += "\n✅ <b>Sin alertas meteorológicas</b>\n"
+
+        if linea_sol:
+            msg += f"\n{linea_sol}"
+
+        msg += "\n📡 <i>Fuente: Open-Meteo (GFS/ECMWF)"
+        if ensemble:
+            msg += " · Ensemble ECMWF"
+        msg += "</i>\n"
         msg += "🛡️ <i>Protección Civil Tempoal</i>"
-        
+
         return msg
-        
+
     except Exception as e:
         logger.error(f"Error generando mensaje completo: {e}")
         return None
@@ -439,6 +423,11 @@ def obtener_bloques_diarios(datos, ensemble=None):
 # rocío, no lluvia.
 UMBRAL_LLUVIA_ENSEMBLE_MM = 0.1
 
+# Umbral de lluvia FUERTE (mm acumulados en el bloque, 6 h). Es el
+# mismo que etiqueta_bloque usa para "LLUVIAS FUERTES": 10 mm en
+# 6 horas ya es lluvia seria para Tempoal.
+UMBRAL_LLUVIA_FUERTE_MM = 10.0
+
 
 def _claves_miembros(seccion, variable):
     """Claves '<variable>_memberNN' ordenadas (miembros perturbados)."""
@@ -463,6 +452,10 @@ def extraer_ensemble_bloque(ensemble, hora_inicio, hora_fin, fecha_hoy):
 
     - prob_lluvia_ens: % de miembros cuya lluvia acumulada en el
       bloque supera UMBRAL_LLUVIA_ENSEMBLE_MM (0.1 mm).
+    - prob_lluvia_fuerte_ens: % de miembros cuya lluvia acumulada
+      en el bloque supera UMBRAL_LLUVIA_FUERTE_MM (10 mm). Es la
+      segunda probabilidad del ensemble: distingue "lloverá seguro
+      pero ligero" de "lloverá seguro y fuerte".
     - temp_media_ens: media de las temperaturas medias de bloque de
       cada miembro.
     - temp_spread: desviación estándar entre miembros de esa media
@@ -491,6 +484,7 @@ def extraer_ensemble_bloque(ensemble, hora_inicio, hora_fin, fecha_hoy):
 
     medias_temp = []
     con_lluvia = 0
+    con_fuerte = 0
     n = 0
     for kt, kl in zip(claves_temp, claves_lluvia):
         arr_t = hourly.get(kt) or []
@@ -502,14 +496,18 @@ def extraer_ensemble_bloque(ensemble, hora_inicio, hora_fin, fecha_hoy):
         if not temps or not precs:
             continue
         medias_temp.append(sum(temps) / len(temps))
-        if sum(precs) > UMBRAL_LLUVIA_ENSEMBLE_MM:
+        acumulado = sum(precs)
+        if acumulado > UMBRAL_LLUVIA_ENSEMBLE_MM:
             con_lluvia += 1
+        if acumulado > UMBRAL_LLUVIA_FUERTE_MM:
+            con_fuerte += 1
         n += 1
     if n == 0:
         return None
 
     return {
         'prob_lluvia_ens': round(100 * con_lluvia / n),
+        'prob_lluvia_fuerte_ens': round(100 * con_fuerte / n),
         'temp_media_ens': round(sum(medias_temp) / len(medias_temp), 1),
         'temp_spread': round(_desviacion_estandar(medias_temp), 1),
         'n_miembros': n,
@@ -596,90 +594,28 @@ def nivel_confianza(bloques):
     return ("MEDIA", 3)
 
 
-def _frase_lluvia(resumen):
-    """Frase sobre lluvia para un bloque."""
-    prob = resumen.get('prob_max') or 0
-    mm = resumen.get('lluvia_mm') or 0
-    if prob >= 70:
-        frase = f"alto potencial de lluvias ({prob}% de probabilidad"
-        if mm >= 5:
-            frase += f", hasta {mm:.0f} mm acumulados"
-        frase += "), pueden ser momentáneamente fuertes"
-        return frase
-    if prob >= 40:
-        return f"probabilidad de lluvia del {prob}%, con chubascos ocasionales"
-    if prob >= 20:
-        return f"alguna llovizna o lluvia ligera ocasional ({prob}%)"
-    return "sin lluvia esperada"
-
-
-def _frase_viento(resumen):
-    """Frase sobre viento para un bloque."""
-    direccion = resumen.get('viento_dir')
-    vmin = resumen.get('viento_min')
-    vmax = resumen.get('viento_max')
-    if not direccion or vmax is None:
-        return None
-    if vmax >= 40:
-        intensidad = "fuerte"
-    elif vmax >= 20:
-        intensidad = "moderado"
-    elif vmax >= 10:
-        intensidad = "ligero"
-    else:
-        intensidad = "flojo"
-    if vmin is not None and vmin != vmax:
-        rango = f"de {vmin:.0f} a {vmax:.0f} km/h"
-    else:
-        rango = f"de {vmax:.0f} km/h"
-    return f"viento del {direccion.lower()} {intensidad}, {rango}"
-
-
-def _frase_temperatura(resumen):
-    """Frase sobre temperatura para un bloque."""
-    media = resumen.get('temp_media')
-    if media is None:
-        return None
-    if media < 16:
-        ambiente = "ambiente frío"
-    elif media < 19:
-        ambiente = "ambiente fresco"
-    elif media <= 25:
-        ambiente = "ambiente templado"
-    elif media <= 30:
-        ambiente = "ambiente cálido"
-    else:
-        ambiente = "ambiente muy caluroso"
-    frase = (f"{ambiente}, temperatura media de {media:.0f}°C "
-             f"(mín. {resumen.get('temp_min'):.0f}°, "
-             f"máx. {resumen.get('temp_max'):.0f}°)")
-    sensacion = resumen.get('sensacion_media')
-    if sensacion is not None and abs(sensacion - media) >= 3:
-        frase += f", sensación térmica de {sensacion:.0f}°C"
-    return frase
-
-
 def generar_conclusiones_bloques(datos, ensemble=None):
     """
     Genera una conclusión narrada por bloque (mañana, tarde, noche),
-    estilo MeteoAlert. Devuelve una lista de 3 textos en HTML para Telegram.
+    estilo MeteoAlert, pero inteligente: el interpretador decide qué
+    aparece y con qué palabras (el viento flojo y la presión normal
+    no se mencionan; la lluvia se dice con palabras decisivas según
+    la probabilidad real del ensemble). Devuelve una lista de 3
+    textos en HTML para Telegram.
     Con `ensemble`, las conclusiones usan la probabilidad real de lluvia.
     """
     try:
         bloques = obtener_bloques_diarios(datos, ensemble=ensemble)
+        contexto = {
+            'bloques': bloques,
+            'daily': datos.get('daily', {}) or {},
+            'confianza': nivel_confianza(bloques),
+        }
         conclusiones = []
         for bloque in bloques:
-            partes = [_frase_lluvia(bloque)]
-            viento = _frase_viento(bloque)
-            if viento:
-                partes.append(viento)
-            temperatura = _frase_temperatura(bloque)
-            if temperatura:
-                partes.append(temperatura)
-            texto = ". ".join(
-                p[:1].upper() + p[1:] if p else p for p in partes) + "."
+            cuerpo = interpretar_bloque(bloque, contexto)
             conclusiones.append(
-                f"• <b>{bloque['nombre']} ({bloque['horas']}):</b> {texto}")
+                f"• <b>{bloque['nombre']} ({bloque['horas']}):</b> {cuerpo}")
         return conclusiones
     except Exception as e:
         logger.error(f"Error generando conclusiones por bloque: {e}")
