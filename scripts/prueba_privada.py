@@ -135,7 +135,8 @@ def main():
     print(f"  ✅ {len(alertas)} alertas, {len(eventos)} eventos")
 
     print("PASO 4: Generando reporte de texto...")
-    mensaje = generar_mensaje_completo(datos, alertas, eventos)
+    mensaje = generar_mensaje_completo(datos, alertas, eventos,
+                                      ensemble=ensemble)
     if mensaje:
         print(f"  ✅ Reporte generado ({len(mensaje)} caracteres)")
         with open('reporte_prueba.txt', 'w', encoding='utf-8') as f:
