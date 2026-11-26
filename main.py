@@ -82,7 +82,8 @@ def main():
     
     # 4. Generar mensaje
     logger.info("\n📋 PASO 4: Generando reporte...")
-    mensaje = generar_mensaje_completo(datos, alertas, eventos)
+    mensaje = generar_mensaje_completo(datos, alertas, eventos,
+                                        ensemble=ensemble)
     
     if not mensaje:
         logger.error("❌ Error generando mensaje")
