@@ -77,6 +77,11 @@ def main():
     except Exception as e:
         logger.warning(f"⚠️  Ensemble no disponible ({e}), se sigue sin él")
 
+    # Llave de Groq (respaldo del narrador): si no está, el respaldo
+    # se omite sin romper nada; los getters la leen también del
+    # entorno, pero se pasa explícita para que el flujo sea visible.
+    groq_api_key = os.environ.get("GROQ_API_KEY")
+
     # 2c. Narrativa semanal con Gemini (opcional, best-effort: sin llave
     # GEMINI_API_KEY o si la llamada falla, el reporte sigue sin la
     # sección semanal y nada se rompe)
@@ -84,7 +89,7 @@ def main():
     semana_narrativa = None
     try:
         semana_narrativa = obtener_narrativa_semanal(
-            datos['daily'], ensemble=ensemble)
+            datos['daily'], ensemble=ensemble, groq_api_key=groq_api_key)
         if semana_narrativa:
             logger.info("✅ Narrativa semanal lista")
         else:
@@ -94,12 +99,15 @@ def main():
         semana_narrativa = None
 
     # 2d. Narrativa del día con Gemini (opcional, best-effort: sin
-    # llave GEMINI_API_KEY o si la llamada falla, el reporte sigue sin
-    # la introducción y nada se rompe)
+    # llave GEMINI_API_KEY o si la llamada falla, el caption de la
+    # tarjeta queda solo con las viñetas y nada se rompe). La
+    # narrativa ya no va en el texto ejecutivo: vive solo en el
+    # caption de la tarjeta.
     logger.info("\n📋 PASO 2d: Narrativa del día (Gemini, opcional)...")
     narrativa_dia = None
     try:
-        narrativa_dia = obtener_narrativa_dia(datos, ensemble=ensemble)
+        narrativa_dia = obtener_narrativa_dia(
+            datos, ensemble=ensemble, groq_api_key=groq_api_key)
         if narrativa_dia:
             logger.info("✅ Narrativa del día lista")
         else:
@@ -129,7 +137,8 @@ def main():
         logger.info("\n📋 PASO 3b: Explicación de alertas "
                     "(Gemini, opcional)...")
         try:
-            explicacion_alertas = obtener_explicacion_alertas(alertas)
+            explicacion_alertas = obtener_explicacion_alertas(
+                alertas, groq_api_key=groq_api_key)
             if explicacion_alertas:
                 logger.info("✅ Explicación de alertas lista")
             else:
@@ -143,7 +152,6 @@ def main():
     mensaje = generar_mensaje_completo(datos, alertas, eventos,
                                         ensemble=ensemble,
                                         semana_narrativa=semana_narrativa,
-                                        narrativa_dia=narrativa_dia,
                                         explicacion_alertas=explicacion_alertas)
     
     if not mensaje:
@@ -203,7 +211,7 @@ def main():
                         "(Gemini, opcional)...")
             try:
                 interpretacion_navidad = obtener_interpretacion_navidad(
-                    probs_navidad)
+                    probs_navidad, groq_api_key=groq_api_key)
                 if interpretacion_navidad:
                     logger.info("✅ Interpretación de Navidad lista")
                 else:
