@@ -167,7 +167,7 @@ def generar_estadisticas_semana(daily):
         return ""
 
 def generar_mensaje_completo(data, alertas, eventos_especiales,
-                            ensemble=None):
+                            ensemble=None, semana_narrativa=None):
     """
     Genera el mensaje completo formateado para Telegram.
 
@@ -188,6 +188,10 @@ def generar_mensaje_completo(data, alertas, eventos_especiales,
     El parámetro es opcional para no romper a quien llama sin él
     (main.py debe pasar ensemble=ensemble para que el texto use las
     probabilidades reales, como ya hace el caption de la tarjeta).
+
+    Con `semana_narrativa` (texto del narrador Gemini, opcional), se
+    agrega la sección "LA SEMANA EN TEMPOAL" justo después de
+    "PRÓXIMOS 3 DÍAS". Sin ella, la sección no aparece.
     """
     try:
         current = data.get('current') or {}
@@ -285,6 +289,14 @@ def generar_mensaje_completo(data, alertas, eventos_especiales,
 
         # Pronóstico 3 días
         msg += generar_pronostico_3_dias(daily)
+
+        # Narrativa semanal con Gemini (solo si el narrador devolvió
+        # texto validado; si no, la sección no aparece)
+        if semana_narrativa and str(semana_narrativa).strip():
+            msg += "\n📅 <b>LA SEMANA EN TEMPOAL:</b>\n"
+            for linea in str(semana_narrativa).strip().splitlines():
+                if linea.strip():
+                    msg += f"{linea.strip()}\n"
 
         msg += "\n━━━━━━━━━━━━━━━━━━━━\n"
 
