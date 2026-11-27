@@ -20,8 +20,17 @@ from src.clima import (
     obtener_datos_ensemble_navidad,
 )
 from src.alertas import analizar_riesgos_climaticos, detectar_eventos_especiales
-from src.formato import generar_mensaje_completo, generar_caption_tarjeta
-from src.narrador import obtener_narrativa_semanal
+from src.formato import (
+    generar_caption_navidad,
+    generar_caption_tarjeta,
+    generar_mensaje_completo,
+)
+from src.narrador import (
+    obtener_explicacion_alertas,
+    obtener_interpretacion_navidad,
+    obtener_narrativa_dia,
+    obtener_narrativa_semanal,
+)
 from src.grafica_navidad import (
     calcular_probabilidades_frio,
     generar_grafica_navidad,
@@ -84,6 +93,21 @@ def main():
         logger.warning(f"⚠️  Narrativa semanal no disponible ({e})")
         semana_narrativa = None
 
+    # 2d. Narrativa del día con Gemini (opcional, best-effort: sin
+    # llave GEMINI_API_KEY o si la llamada falla, el reporte sigue sin
+    # la introducción y nada se rompe)
+    logger.info("\n📋 PASO 2d: Narrativa del día (Gemini, opcional)...")
+    narrativa_dia = None
+    try:
+        narrativa_dia = obtener_narrativa_dia(datos, ensemble=ensemble)
+        if narrativa_dia:
+            logger.info("✅ Narrativa del día lista")
+        else:
+            logger.info("   Sin narrativa del día, el reporte sigue igual")
+    except Exception as e:
+        logger.warning(f"⚠️  Narrativa del día no disponible ({e})")
+        narrativa_dia = None
+
     # 3. Analizar riesgos
     logger.info("\n📋 PASO 3: Analizando riesgos meteorológicos...")
     alertas = analizar_riesgos_climaticos(datos['daily'])
@@ -96,12 +120,31 @@ def main():
     
     if eventos:
         logger.warning(f"⚡ {len(eventos)} eventos especiales detectados")
-    
+
+    # 3b. Explicación de las alertas con Gemini (opcional, best-effort:
+    # solo si hay alertas; si falla, el reporte sigue con las alertas
+    # de siempre y nada se rompe)
+    explicacion_alertas = None
+    if alertas:
+        logger.info("\n📋 PASO 3b: Explicación de alertas "
+                    "(Gemini, opcional)...")
+        try:
+            explicacion_alertas = obtener_explicacion_alertas(alertas)
+            if explicacion_alertas:
+                logger.info("✅ Explicación de alertas lista")
+            else:
+                logger.info("   Sin explicación, el reporte sigue igual")
+        except Exception as e:
+            logger.warning(f"⚠️  Explicación no disponible ({e})")
+            explicacion_alertas = None
+
     # 4. Generar mensaje
     logger.info("\n📋 PASO 4: Generando reporte...")
     mensaje = generar_mensaje_completo(datos, alertas, eventos,
                                         ensemble=ensemble,
-                                        semana_narrativa=semana_narrativa)
+                                        semana_narrativa=semana_narrativa,
+                                        narrativa_dia=narrativa_dia,
+                                        explicacion_alertas=explicacion_alertas)
     
     if not mensaje:
         logger.error("❌ Error generando mensaje")
@@ -131,21 +174,39 @@ def main():
     # y solo si hay datos del ensemble GFS; nunca bloquea el reporte)
     logger.info("\n📋 PASO 4c: Gráfica de Navidad (si es temporada)...")
     ruta_navidad = None
+    probs_navidad = None
+    interpretacion_navidad = None
     if temporada_navidad():
         try:
             datos_gfs = obtener_datos_ensemble_navidad()
             if datos_gfs:
                 rango = rango_navidad()
                 if rango:
-                    probs = calcular_probabilidades_frio(
+                    probs_navidad = calcular_probabilidades_frio(
                         datos_gfs, rango[0], rango[1])
-                    if probs:
+                    if probs_navidad:
                         ruta_navidad = generar_grafica_navidad(
-                            probs, "grafica_navidad.png")
+                            probs_navidad, "grafica_navidad.png")
             if not ruta_navidad:
                 logger.warning("⚠️  Sin gráfica de Navidad, el reporte sigue igual")
         except Exception as e:
             logger.warning(f"⚠️  Gráfica de Navidad no disponible ({e})")
+        # Interpretación de la gráfica con Gemini (opcional,
+        # best-effort: solo si la gráfica salió; si falla, el caption
+        # queda como siempre y nada se rompe)
+        if probs_navidad:
+            logger.info("\n📋 PASO 4c2: Interpretación de Navidad "
+                        "(Gemini, opcional)...")
+            try:
+                interpretacion_navidad = obtener_interpretacion_navidad(
+                    probs_navidad)
+                if interpretacion_navidad:
+                    logger.info("✅ Interpretación de Navidad lista")
+                else:
+                    logger.info("   Sin interpretación, el caption sigue igual")
+            except Exception as e:
+                logger.warning(f"⚠️  Interpretación no disponible ({e})")
+                interpretacion_navidad = None
     else:
         logger.info("   Fuera de temporada, se omite")
 
@@ -157,10 +218,8 @@ def main():
         if not enviar_foto_telegram(ruta_tarjeta, caption_tarjeta):
             logger.warning("⚠️  No se pudo enviar la tarjeta, continúa el texto")
     if ruta_navidad:
-        caption_navidad = (
-            "🎄 <b>¿FRÍO EN NAVIDAD?</b> Probabilidad de mínima menor a "
-            "12 °C rumbo al 25 de diciembre, según el ensemble GFS "
-            "(31 miembros). A 30 días la incertidumbre es muy alta.")
+        caption_navidad = generar_caption_navidad(
+            probs_navidad, interpretacion=interpretacion_navidad)
         if not enviar_foto_telegram(ruta_navidad, caption_navidad):
             logger.warning("⚠️  No se pudo enviar la gráfica de Navidad")
     exito = enviar_mensaje_telegram(mensaje, max_reintentos=3)
