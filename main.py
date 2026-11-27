@@ -21,6 +21,7 @@ from src.clima import (
 )
 from src.alertas import analizar_riesgos_climaticos, detectar_eventos_especiales
 from src.formato import generar_mensaje_completo, generar_caption_tarjeta
+from src.narrador import obtener_narrativa_semanal
 from src.grafica_navidad import (
     calcular_probabilidades_frio,
     generar_grafica_navidad,
@@ -67,6 +68,22 @@ def main():
     except Exception as e:
         logger.warning(f"⚠️  Ensemble no disponible ({e}), se sigue sin él")
 
+    # 2c. Narrativa semanal con Gemini (opcional, best-effort: sin llave
+    # GEMINI_API_KEY o si la llamada falla, el reporte sigue sin la
+    # sección semanal y nada se rompe)
+    logger.info("\n📋 PASO 2c: Narrativa semanal (Gemini, opcional)...")
+    semana_narrativa = None
+    try:
+        semana_narrativa = obtener_narrativa_semanal(
+            datos['daily'], ensemble=ensemble)
+        if semana_narrativa:
+            logger.info("✅ Narrativa semanal lista")
+        else:
+            logger.info("   Sin narrativa semanal, el reporte sigue igual")
+    except Exception as e:
+        logger.warning(f"⚠️  Narrativa semanal no disponible ({e})")
+        semana_narrativa = None
+
     # 3. Analizar riesgos
     logger.info("\n📋 PASO 3: Analizando riesgos meteorológicos...")
     alertas = analizar_riesgos_climaticos(datos['daily'])
@@ -83,7 +100,8 @@ def main():
     # 4. Generar mensaje
     logger.info("\n📋 PASO 4: Generando reporte...")
     mensaje = generar_mensaje_completo(datos, alertas, eventos,
-                                        ensemble=ensemble)
+                                        ensemble=ensemble,
+                                        semana_narrativa=semana_narrativa)
     
     if not mensaje:
         logger.error("❌ Error generando mensaje")
