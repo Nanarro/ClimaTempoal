@@ -171,13 +171,17 @@ def generar_mensaje_completo(data, alertas, eventos_especiales,
     """
     Genera el mensaje completo formateado para Telegram.
 
-    Desde 2026-11-26 el texto es inteligente y no lista datos
-    sueltos: el interpretador decide qué aparece y con qué palabras
-    (el viento flojo y la presión normal no se mencionan; si importan,
-    se dice qué causan o anuncian). Estructura seria: encabezado,
-    resumen del día, bloques mañana/tarde/noche, comparación especial
-    solo en casos excepcionales, presión del día si anuncia algo,
-    recomendación práctica, alertas y pie con la fuente.
+    El texto del reporte es el resumen ejecutivo de siempre
+    (condiciones actuales con viento, pronóstico horario con las
+    temperaturas y el viento a lo largo del día, próximos 3 días y
+    estadísticas de la semana), más lo inteligente del interpretador:
+    resumen decisivo del día, comparación especial solo en casos
+    excepcionales, presión del día si anuncia algo y recomendación
+    práctica.
+
+    Los 3 bloques mañana/tarde/noche NO van en este texto: ya están
+    en el caption de la tarjeta, y repetirlos aquí duplicaba el
+    mensaje en el canal.
 
     Con `ensemble`, las probabilidades de lluvia (y de lluvia fuerte)
     son las reales del ensemble ECMWF; sin él, las deterministas.
@@ -186,7 +190,15 @@ def generar_mensaje_completo(data, alertas, eventos_especiales,
     probabilidades reales, como ya hace el caption de la tarjeta).
     """
     try:
+        current = data.get('current') or {}
+        hourly = data.get('hourly') or {}
         daily = data['daily']
+
+        # Condiciones actuales
+        temp_actual = current.get('temperature_2m', 0)
+        sensacion = current.get('apparent_temperature', 0)
+        humedad = current.get('relative_humidity_2m', 0)
+        viento_actual = current.get('wind_speed_10m', 0)
 
         # Sol (opcional: si Open-Meteo no trae amanecer/atardecer, se
         # omite la línea y el reporte sigue; antes un solo campo
@@ -209,17 +221,57 @@ def generar_mensaje_completo(data, alertas, eventos_especiales,
         msg = "🚨 <b>MONITOREO PROTECCIÓN CIVIL TEMPOAL</b> 🚨\n"
         msg += f"📅 <i>{formatear_fecha_completa()}</i>\n\n"
 
+        # Resumen ejecutivo (de siempre)
+        msg += generar_resumen_ejecutivo(
+            {'temperatura': temp_actual, 'sensacion': sensacion,
+             'humedad': humedad},
+            daily
+        )
+
         # Resumen decisivo del día (+ advertencia si el pronóstico
         # es poco seguro)
         msg += f"{dia['resumen']}\n"
         if dia['advertencia']:
             msg += f"{dia['advertencia']}\n"
 
-        # Bloques mañana / tarde / noche (mismo texto que el caption)
-        msg += "\n"
-        for conclusion in generar_conclusiones_bloques(
-                data, ensemble=ensemble):
-            msg += f"{conclusion}\n"
+        msg += "\n━━━━━━━━━━━━━━━━━━━━\n\n"
+
+        # Condiciones actuales
+        msg += "🌡️ <b>CONDICIONES ACTUALES:</b>\n"
+        msg += f"   Temperatura: {round(temp_actual, 1)}°C\n"
+        msg += f"   Sensación térmica: {round(sensacion, 1)}°C\n"
+        msg += f"   Humedad: {round(humedad)}%\n"
+        msg += f"   Viento: {round(viento_actual, 1)} km/h\n"
+        msg += linea_sol
+
+        msg += "\n━━━━━━━━━━━━━━━━━━━━\n"
+
+        # Pronóstico horario (24h): temperaturas y viento a lo
+        # largo del día
+        msg += "\n<b>PRONÓSTICO HORARIO (24h):</b>\n"
+
+        times = hourly.get('time') or []
+        temps = hourly.get('temperature_2m') or []
+        sensaciones = hourly.get('apparent_temperature') or []
+        probs = hourly.get('precipitation_probability') or []
+        vientos = hourly.get('wind_gusts_10m') or []
+        uv_indices = hourly.get('uv_index', [0] * len(times))
+
+        for i in range(min(24, len(times))):
+            # Mostrar cada 3 horas o eventos importantes
+            if i % 3 == 0 or probs[i] > 60 or vientos[i] > 40 \
+                    or uv_indices[i] > 8:
+                try:
+                    dt = datetime.fromisoformat(times[i])
+                    hora = dt.strftime("%H")
+                    msg += formatear_linea_horaria(
+                        hora, temps[i], sensaciones[i],
+                        probs[i], vientos[i], uv_indices[i]
+                    )
+                except Exception as e:
+                    logger.warning(f"Error formateando hora {i}: {e}")
+
+        msg += "\n━━━━━━━━━━━━━━━━━━━━\n"
 
         # Comparación especial (solo días excepcionales) y presión
         if dia['especial']:
@@ -231,11 +283,17 @@ def generar_mensaje_completo(data, alertas, eventos_especiales,
         if dia['recomendacion']:
             msg += f"\n💡 {dia['recomendacion']}\n"
 
+        # Pronóstico 3 días
+        msg += generar_pronostico_3_dias(daily)
+
+        msg += "\n━━━━━━━━━━━━━━━━━━━━\n"
+
         # Eventos especiales
         if eventos_especiales:
             msg += "\n⚡ <b>EVENTOS ESPECIALES (24h):</b>\n\n"
             for evento in eventos_especiales:
                 msg += f"{evento}\n\n"
+            msg += "━━━━━━━━━━━━━━━━━━━━\n"
 
         # Alertas
         if alertas:
@@ -245,9 +303,12 @@ def generar_mensaje_completo(data, alertas, eventos_especiales,
         else:
             msg += "\n✅ <b>Sin alertas meteorológicas</b>\n"
 
-        if linea_sol:
-            msg += f"\n{linea_sol}"
+        msg += "\n━━━━━━━━━━━━━━━━━━━━\n"
 
+        # Estadísticas
+        msg += generar_estadisticas_semana(daily)
+
+        msg += "\n━━━━━━━━━━━━━━━━━━━━\n"
         msg += "\n📡 <i>Fuente: Open-Meteo (GFS/ECMWF)"
         if ensemble:
             msg += " · Ensemble ECMWF"
