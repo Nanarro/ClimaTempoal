@@ -1,5 +1,6 @@
 """
-Narrador con Gemini (API gratuita de Google AI Studio).
+Narrador con Gemini (API gratuita de Google AI Studio) y respaldo
+con Groq (API gratuita, sin tarjeta).
 
 Escribe las partes narradas del reporte: el panorama semanal
 ("LA SEMANA EN TEMPOAL"), la actualización del día, la lectura de
@@ -8,10 +9,13 @@ palabras simples. Todo es opcional y best-effort: sin llave, sin red
 o si la respuesta no pasa la validación, el reporte sigue igual sin
 esa parte (nunca tumba el reporte ni el envío).
 
-La llave (GEMINI_API_KEY) se guarda como secreto de GitHub; sin
-tarjeta no hay manera de que genere un cobro. El modelo solo recibe
-los números del pronóstico que ya baja Open-Meteo (más el resumen
-del ensemble); no recibe datos personales ni secretos.
+La llave de Gemini (GEMINI_API_KEY) se guarda como secreto de
+GitHub; sin tarjeta no hay manera de que genere un cobro. El
+respaldo es Groq (GROQ_API_KEY, también secreto, también gratis y
+sin tarjeta): si Gemini no responde por saturación o cuota, se
+intenta una vez con Groq (modelo openai/gpt-oss-120b). El modelo
+solo recibe los números del pronóstico que ya baja Open-Meteo (más
+el resumen del ensemble); no recibe datos personales ni secretos.
 """
 
 import os
@@ -24,18 +28,26 @@ import requests
 
 from .utils import logger, DIAS_ESP, obtener_hora_mexico
 
-# Gemini 3.8 Flash: capa gratuita de Google AI Studio (sin tarjeta;
-# el bot hace hasta 4 llamadas al día, una por sección narrada).
-# Antes era gemini-2.5-flash, pero Google limitó los modelos 2.5 a
-# quienes ya los usaban: con una llave nueva devuelve HTTP 404, así
-# que se usa el modelo vigente recomendado por Google (3.8 Flash).
-MODELO_GEMINI = "gemini-3.8-flash"
-# Respaldo: si el modelo principal está saturado (503) o no responde,
-# se intenta una vez con el modelo ligero, que suele responder más
-# rápido (es el otro modelo que recomienda Google para llaves nuevas).
-MODELO_GEMINI_RESPALDO = "gemini-3.5-flash-lite"
+# Gemini 3.5 Flash-Lite: capa gratuita de Google AI Studio (sin
+# tarjeta; el bot hace hasta 4 llamadas al día, una por sección
+# narrada). Antes el principal era gemini-3.8-flash, pero en todas
+# las corridas en vivo falló por saturación (503) o por cuota (429)
+# y siempre respondió el ligero, así que el ligero es ahora el
+# principal y 3.8 Flash sale de la cadena. El 2.5 Flash quedó fuera
+# antes: Google lo limitó a quienes ya lo usaban (HTTP 404 con
+# llaves nuevas).
+MODELO_GEMINI = "gemini-3.5-flash-lite"
 URL_GEMINI = ("https://generativelanguage.googleapis.com/v1beta/models/"
               "{modelo}:generateContent")
+
+# Respaldo: Groq (plan gratuito, sin tarjeta), API compatible con
+# OpenAI. Si Gemini no responde, se intenta una vez con
+# openai/gpt-oss-120b (el modelo gratuito insignia de Groq;
+# llama-3.3-70b-versatile salió del plan gratuito el 2026-08-16,
+# no usarlo). Límites gratuitos: 30 RPM, 1.000 peticiones/día,
+# 8.000 TPM; el bot hace 4 llamadas al día.
+MODELO_GROQ = "openai/gpt-oss-120b"
+URL_GROQ = "https://api.groq.com/openai/v1/chat/completions"
 
 # Límites de la validación: la sección es corta (3-4 líneas).
 MAX_LINEAS_NARRATIVA = 5
@@ -260,33 +272,103 @@ def _extraer_texto_gemini(data):
         return None
 
 
-def llamar_gemini(prompt, api_key, modelo=MODELO_GEMINI,
-                  etiqueta="Gemini"):
+def _extraer_texto_groq(data):
+    """Saca el texto de choices[0].message.content (o None)."""
+    try:
+        opciones = (data or {}).get('choices') or []
+        if not opciones:
+            return None
+        mensaje = (opciones[0].get('message') or {})
+        texto = (mensaje.get('content') or "").strip()
+        return texto or None
+    except Exception:
+        return None
+
+
+def llamar_groq(prompt, api_key, modelo=MODELO_GROQ, etiqueta="Groq"):
     """
-    Una llamada a Gemini (best-effort, nunca lanza excepciones).
+    Una llamada a Groq (best-effort, nunca lanza excepciones).
 
     Devuelve el texto crudo de la respuesta o None. Sin llave no hay
-    llamada de red. Primero se intenta el modelo dado (2 intentos);
-    si no responde, se intenta una vez con el modelo de respaldo
-    (gemini-3.5-flash-lite). Por intento, el tiempo límite es 20 s.
-    La llave viaja como parámetro ?key= en la URL (el patrón REST
-    documentado de Google; las llaves nuevas con prefijo "AQ." dan
-    404 si van en el header x-goog-api-key) y nunca se registra en
-    el log: la URL no se registra.
+    llamada de red. Un solo intento, tiempo límite 20 s. La llave
+    viaja en el header Authorization: Bearer (el patrón de la API
+    compatible con OpenAI) y nunca se registra en el log.
     """
     try:
         llave = (api_key or "").strip()
         if not llave:
             return None
-        for modelo_actual, intentos in ((modelo, 2),
-                                        (MODELO_GEMINI_RESPALDO, 1)):
-            texto = _llamar_modelo(prompt, llave, modelo_actual,
-                                   etiqueta, intentos)
-            if texto:
-                if modelo_actual != modelo:
-                    logger.info(f"🤖 {etiqueta}: respondió con "
-                                f"{modelo_actual} (respaldo)")
-                return texto
+        headers = {"Content-Type": "application/json",
+                   "Authorization": "Bearer " + llave}
+        cuerpo = {
+            "model": modelo,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.5,
+            "max_tokens": 1024,
+        }
+        logger.info(f"🤖 {etiqueta}: pidiendo a Groq ({modelo})...")
+        respuesta = requests.post(URL_GROQ, headers=headers, json=cuerpo,
+                                  timeout=20)
+        respuesta.raise_for_status()
+        texto = _extraer_texto_groq(respuesta.json())
+        if not texto:
+            logger.warning(f"🤖 {etiqueta}: Groq respondió sin texto")
+            return None
+        return texto.strip()
+    except requests.HTTPError as e:
+        codigo = (e.response.status_code
+                  if e.response is not None else "?")
+        mensaje = ""
+        try:
+            mensaje = (e.response.json()
+                       .get("error", {}).get("message", ""))
+        except Exception:
+            mensaje = ""
+        logger.warning(f"🤖 {etiqueta}: Groq error HTTP {codigo} "
+                       f"({mensaje[:200]}), se omite")
+        return None
+    except requests.Timeout:
+        logger.warning(f"🤖 {etiqueta}: timeout con Groq")
+        return None
+    except requests.RequestException as e:
+        logger.warning(f"🤖 {etiqueta}: error de red con Groq ({e})")
+        return None
+    except Exception as e:
+        logger.warning(f"🤖 {etiqueta}: error inesperado con Groq ({e})")
+        return None
+
+
+def llamar_gemini(prompt, api_key, modelo=MODELO_GEMINI,
+                  etiqueta="Gemini", groq_api_key=None):
+    """
+    Una llamada a Gemini (best-effort, nunca lanza excepciones).
+
+    Devuelve el texto crudo de la respuesta o None. Sin llave no hay
+    llamada de red. Primero se intenta el modelo dado (2 intentos);
+    si no responde por transporte, se intenta una vez con Groq
+    (respaldo, solo si hay llave GROQ_API_KEY); sin llave Groq el
+    respaldo se omite y se devuelve None. Por intento, el tiempo
+    límite es 20 s. La llave viaja como parámetro ?key= en la URL
+    (el patrón REST documentado de Google; las llaves nuevas con
+    prefijo "AQ." dan 404 si van en el header x-goog-api-key) y
+    nunca se registra en el log: la URL no se registra.
+    """
+    try:
+        llave = (api_key or "").strip()
+        if not llave:
+            return None
+        texto = _llamar_modelo(prompt, llave, modelo, etiqueta, 2)
+        if texto:
+            return texto
+        llave_groq = (groq_api_key or "").strip()
+        if not llave_groq:
+            logger.warning(f"🤖 {etiqueta}: sin llave GROQ_API_KEY, "
+                           "el respaldo se omite")
+            return None
+        texto = llamar_groq(prompt, llave_groq, etiqueta=etiqueta)
+        if texto:
+            logger.info(f"🤖 {etiqueta}: respondió Groq (respaldo)")
+            return texto
         return None
     except Exception as e:
         logger.warning(f"🤖 {etiqueta}: error inesperado ({e})")
@@ -363,15 +445,17 @@ def _llamar_modelo(prompt, llave, modelo, etiqueta, intentos):
 
 
 def obtener_narrativa_semanal(daily, ensemble=None, api_key=None,
-                              modelo=MODELO_GEMINI):
+                              modelo=MODELO_GEMINI, groq_api_key=None):
     """
     Pide a Gemini la narrativa semanal (best-effort, nunca lanza
     excepciones). Devuelve el texto validado o None.
 
     La llave se toma del argumento o de GEMINI_API_KEY; sin llave no
-    hay llamada de red. Si la llamada falla, la respuesta viene vacía
-    o el texto no pasa la validación, devuelve None y el reporte
-    sigue sin la sección. La llave nunca se registra en el log.
+    hay llamada de red. Si Gemini falla por transporte, se intenta
+    una vez con Groq (`groq_api_key` o GROQ_API_KEY). Si la llamada
+    falla, la respuesta viene vacía o el texto no pasa la
+    validación, devuelve None y el reporte sigue sin la sección. La
+    llave nunca se registra en el log.
     """
     try:
         llave = (api_key or os.environ.get("GEMINI_API_KEY") or "").strip()
@@ -379,6 +463,8 @@ def obtener_narrativa_semanal(daily, ensemble=None, api_key=None,
             logger.info("🤖 Narrador: sin llave GEMINI_API_KEY, "
                         "se omite la sección semanal")
             return None
+        llave_groq = (groq_api_key
+                      or os.environ.get("GROQ_API_KEY") or "").strip()
         if not (daily or {}).get('time'):
             logger.warning("🤖 Narrador: sin datos diarios, se omite")
             return None
@@ -392,7 +478,8 @@ def obtener_narrativa_semanal(daily, ensemble=None, api_key=None,
                                f"({e})")
 
         prompt = construir_prompt(daily, ensemble_resumen)
-        texto = llamar_gemini(prompt, llave, modelo, etiqueta="Narrador")
+        texto = llamar_gemini(prompt, llave, modelo, etiqueta="Narrador",
+                              groq_api_key=llave_groq)
         if not texto:
             logger.warning("🤖 Narrador: sin texto de Gemini, se omite")
             return None
@@ -615,14 +702,16 @@ def construir_prompt_dia(datos, ensemble=None):
 
 
 def obtener_narrativa_dia(datos, ensemble=None, api_key=None,
-                          modelo=MODELO_GEMINI):
+                          modelo=MODELO_GEMINI, groq_api_key=None):
     """
     Pide a Gemini la narrativa del día (best-effort, nunca lanza
     excepciones). Devuelve el párrafo validado o None.
 
     La llave se toma del argumento o de GEMINI_API_KEY; sin llave no
-    hay llamada de red. La ventana de validación es solo la fecha de
-    hoy: el párrafo no debe mencionar otras fechas.
+    hay llamada de red. Si Gemini falla por transporte, se intenta
+    una vez con Groq (`groq_api_key` o GROQ_API_KEY). La ventana de
+    validación es solo la fecha de hoy: el párrafo no debe mencionar
+    otras fechas.
     """
     try:
         llave = (api_key or os.environ.get("GEMINI_API_KEY") or "").strip()
@@ -630,6 +719,8 @@ def obtener_narrativa_dia(datos, ensemble=None, api_key=None,
             logger.info("🤖 Narrativa del día: sin llave GEMINI_API_KEY, "
                         "se omite")
             return None
+        llave_groq = (groq_api_key
+                      or os.environ.get("GROQ_API_KEY") or "").strip()
         daily = (datos or {}).get('daily') or {}
         if not daily.get('time'):
             logger.warning("🤖 Narrativa del día: sin datos diarios, "
@@ -637,7 +728,8 @@ def obtener_narrativa_dia(datos, ensemble=None, api_key=None,
             return None
         prompt = construir_prompt_dia(datos, ensemble=ensemble)
         texto = llamar_gemini(prompt, llave, modelo,
-                              etiqueta="Narrativa del día")
+                              etiqueta="Narrativa del día",
+                              groq_api_key=llave_groq)
         if not texto:
             logger.warning("🤖 Narrativa del día: sin texto de Gemini, "
                            "se omite")
@@ -741,14 +833,17 @@ def construir_prompt_navidad(probs):
 
 
 def obtener_interpretacion_navidad(datos_navidad, api_key=None,
-                                   modelo=MODELO_GEMINI):
+                                   modelo=MODELO_GEMINI,
+                                   groq_api_key=None):
     """
     Pide a Gemini la lectura de la gráfica de Navidad (best-effort,
     nunca lanza excepciones). Devuelve 1-2 líneas validadas o None.
 
     `datos_navidad` es la lista de calcular_probabilidades_frio. La
-    ventana de validación son las fechas de la gráfica. Sin datos,
-    sin llave o si la respuesta no pasa la validación, devuelve None.
+    ventana de validación son las fechas de la gráfica. Si Gemini
+    falla por transporte, se intenta una vez con Groq
+    (`groq_api_key` o GROQ_API_KEY). Sin datos, sin llave o si la
+    respuesta no pasa la validación, devuelve None.
     """
     try:
         probs = datos_navidad or []
@@ -759,8 +854,11 @@ def obtener_interpretacion_navidad(datos_navidad, api_key=None,
         if not llave:
             logger.info("🤖 Navidad: sin llave GEMINI_API_KEY, se omite")
             return None
+        llave_groq = (groq_api_key
+                      or os.environ.get("GROQ_API_KEY") or "").strip()
         prompt = construir_prompt_navidad(probs)
-        texto = llamar_gemini(prompt, llave, modelo, etiqueta="Navidad")
+        texto = llamar_gemini(prompt, llave, modelo, etiqueta="Navidad",
+                              groq_api_key=llave_groq)
         if not texto:
             logger.warning("🤖 Navidad: sin texto de Gemini, se omite")
             return None
@@ -818,16 +916,17 @@ def construir_prompt_alertas(alertas):
 
 
 def obtener_explicacion_alertas(alertas, api_key=None, modelo=MODELO_GEMINI,
-                                fechas_ventana=None):
+                                fechas_ventana=None, groq_api_key=None):
     """
     Pide a Gemini la explicación de las alertas (best-effort, nunca
     lanza excepciones). Devuelve el texto validado o None.
 
-    Sin alertas o sin llave no hay llamada de red. La ventana de
-    validación son las fechas de los próximos 7 días (por defecto,
-    desde hoy en hora de México); se puede pasar explícita
-    (`fechas_ventana`, lista YYYY-MM-DD) para probar sin depender
-    de la fecha actual.
+    Sin alertas o sin llave no hay llamada de red. Si Gemini falla
+    por transporte, se intenta una vez con Groq (`groq_api_key` o
+    GROQ_API_KEY). La ventana de validación son las fechas de los
+    próximos 7 días (por defecto, desde hoy en hora de México); se
+    puede pasar explícita (`fechas_ventana`, lista YYYY-MM-DD) para
+    probar sin depender de la fecha actual.
     """
     try:
         alertas = [a for a in (alertas or []) if str(a or "").strip()]
@@ -838,12 +937,15 @@ def obtener_explicacion_alertas(alertas, api_key=None, modelo=MODELO_GEMINI,
         if not llave:
             logger.info("🤖 Alertas: sin llave GEMINI_API_KEY, se omite")
             return None
+        llave_groq = (groq_api_key
+                      or os.environ.get("GROQ_API_KEY") or "").strip()
         if fechas_ventana is None:
             hoy = obtener_hora_mexico().date()
             fechas_ventana = [(hoy + timedelta(days=i)).isoformat()
                               for i in range(7)]
         prompt = construir_prompt_alertas(alertas)
-        texto = llamar_gemini(prompt, llave, modelo, etiqueta="Alertas")
+        texto = llamar_gemini(prompt, llave, modelo, etiqueta="Alertas",
+                              groq_api_key=llave_groq)
         if not texto:
             logger.warning("🤖 Alertas: sin texto de Gemini, se omite")
             return None
