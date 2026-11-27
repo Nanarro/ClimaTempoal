@@ -435,23 +435,52 @@ class TestLlamarGemini(unittest.TestCase):
             mock_sleep.assert_called_once_with(10)
 
     def test_error_503_dos_veces_devuelve_none(self):
+        # Principal 2 intentos + respaldo 1 intento, todos 503.
         with patch('src.narrador.requests.post') as mock_post:
             mock_post.side_effect = [
+                _respuesta_error(503, 'high demand'),
                 _respuesta_error(503, 'high demand'),
                 _respuesta_error(503, 'high demand')]
             with patch('src.narrador.time.sleep'):
                 self.assertIsNone(llamar_gemini("prompt", "k"))
-            self.assertEqual(mock_post.call_count, 2)
+            self.assertEqual(mock_post.call_count, 3)
 
     def test_error_404_no_reintenta(self):
-        # 404 es de configuración: una sola llamada, sin espera.
+        # 404 es de configuración: sin espera, pero sí se intenta el
+        # modelo de respaldo una vez.
         with patch('src.narrador.requests.post') as mock_post:
             mock_post.side_effect = [
+                _respuesta_error(404, 'not found'),
                 _respuesta_error(404, 'not found')]
             with patch('src.narrador.time.sleep') as mock_sleep:
                 self.assertIsNone(llamar_gemini("prompt", "k"))
-            mock_post.assert_called_once()
+            self.assertEqual(mock_post.call_count, 2)
             mock_sleep.assert_not_called()
+
+    def test_respaldo_responde_si_principal_saturado(self):
+        # El principal da 503 dos veces; el respaldo responde.
+        with patch('src.narrador.requests.post') as mock_post:
+            mock_post.side_effect = [
+                _respuesta_error(503, 'high demand'),
+                _respuesta_error(503, 'high demand'),
+                _respuesta_gemini("Hola.")]
+            with patch('src.narrador.time.sleep'):
+                self.assertEqual(
+                    llamar_gemini("prompt", "k"), "Hola.")
+            self.assertEqual(mock_post.call_count, 3)
+            url_respaldo = mock_post.call_args[0][0]
+            self.assertIn("gemini-3.5-flash-lite", url_respaldo)
+
+    def test_respaldo_responde_si_principal_da_404(self):
+        # El principal no existe para la llave; el respaldo responde.
+        with patch('src.narrador.requests.post') as mock_post:
+            mock_post.side_effect = [
+                _respuesta_error(404, 'not found'),
+                _respuesta_gemini("Hola.")]
+            with patch('src.narrador.time.sleep'):
+                self.assertEqual(
+                    llamar_gemini("prompt", "k"), "Hola.")
+            self.assertEqual(mock_post.call_count, 2)
 
 
 class TestConstruirPromptDia(unittest.TestCase):
