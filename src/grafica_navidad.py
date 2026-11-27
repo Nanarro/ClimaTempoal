@@ -251,7 +251,14 @@ def generar_grafica_navidad(probabilidades, ruta_salida,
         n_dias = len(probabilidades)
         ancho_grupo = (x1 - x0) / n_dias
         ancho_barra = max(4, int(ancho_grupo * 0.36))
+        # Última etiqueta de % dibujada (x0, x1, y0, y1): con ~30 días
+        # los grupos miden ~37 px y una etiqueta "30%" ~38 px, así que
+        # dos días seguidos con % parecidos se empalmaban (se veía
+        # "30%30%" cerca del 19-20 dic). Si la siguiente etiqueta
+        # chocaría con la anterior, se omite: el valor sigue en la
+        # altura de la barra y la gráfica queda legible.
 
+        ultima_etiqueta = None
         for j, dia in enumerate(probabilidades):
             gx = x0 + j * ancho_grupo
             cx = gx + ancho_grupo / 2
@@ -283,9 +290,22 @@ def generar_grafica_navidad(probabilidades, ruta_salida,
                 if (dia['prob_frio'] or 0) >= 20:
                     texto = f"{dia['prob_frio']}%"
                     bbox = draw.textbbox((0, 0), texto, font=fuente_valor)
-                    draw.text((cx - (bbox[2] - bbox[0]) / 2,
-                               y_base - alto_plot * dia['prob_frio'] / 100 - 26),
-                              texto, font=fuente_valor, fill=COLOR_TEXTO)
+                    ancho_txt = bbox[2] - bbox[0]
+                    alto_txt = bbox[3] - bbox[1]
+                    ex0 = cx - ancho_txt / 2
+                    ex1 = cx + ancho_txt / 2
+                    ey0 = y_base - alto_plot * dia['prob_frio'] / 100 - 26
+                    ey1 = ey0 + alto_txt
+                    choca = (
+                        ultima_etiqueta is not None
+                        and ex0 < ultima_etiqueta[1] + 4
+                        and ex1 > ultima_etiqueta[0] - 4
+                        and ey0 < ultima_etiqueta[3]
+                        and ey1 > ultima_etiqueta[2])
+                    if not choca:
+                        draw.text((ex0, ey0), texto, font=fuente_valor,
+                                  fill=COLOR_TEXTO)
+                        ultima_etiqueta = (ex0, ex1, ey0, ey1)
             # Etiqueta de fecha cada 5 días y siempre en Navidad
             if j % 5 == 0 or es_navidad:
                 etiqueta = f"{fecha.day} {MESES_CORTO[fecha.month]}"
