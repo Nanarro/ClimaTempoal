@@ -141,8 +141,9 @@ def construir_prompt(daily, ensemble_resumen=None):
         "3 o 4 líneas cortas en español, con tono serio y amigable, "
         "como un pronóstico narrado de la semana. Usa SOLO los datos "
         "de arriba: no inventes fechas, frentes con nombre, ni "
-        "récords. Si un día no tiene nada notable, no lo menciones. "
-        "No saludes ni te presentes, solo el panorama.")
+        "récords. Si un fenómeno no aparece en los datos de arriba, "
+        "no lo menciones. Si un día no tiene nada notable, no lo "
+        "menciones. No saludes ni te presentes, solo el panorama.")
     return "\n".join(lineas)
 
 
@@ -431,6 +432,27 @@ def _hora_corta(valor_iso):
         return ""
 
 
+def _viento_dominante_dia(bloques):
+    """
+    Dirección de viento dominante del día a partir de los bloques.
+
+    La más frecuente entre los 3 bloques; si no hay mayoría (cada
+    bloque sopla de un lado distinto) devuelve "variable". Pura.
+    """
+    dirs = [b.get('viento_dir') for b in (bloques or [])
+            if b.get('viento_dir')]
+    if not dirs:
+        return None
+    conteo = {}
+    for d in dirs:
+        conteo[d] = conteo.get(d, 0) + 1
+    mas_frecuente = max(conteo.values())
+    ganadoras = [d for d, c in conteo.items() if c == mas_frecuente]
+    if len(ganadoras) == 1:
+        return ganadoras[0]
+    return "variable"
+
+
 def construir_prompt_dia(datos, ensemble=None):
     """
     Arma el prompt de la narrativa del día (pura): condiciones
@@ -442,6 +464,7 @@ def construir_prompt_dia(datos, ensemble=None):
     bloques son las reales del ensemble ECMWF.
     """
     from .formato import nivel_confianza, obtener_bloques_diarios
+    from .interpretador import frase_lluvia
 
     datos = datos or {}
     daily = datos.get('daily') or {}
@@ -500,6 +523,17 @@ def construir_prompt_dia(datos, ensemble=None):
         if presion is not None:
             partes.append(f"presión {round(_num(presion))} hPa")
         partes.append(etiqueta)
+        # La intensidad de lluvia es la misma que dice la tarjeta:
+        # frase_lluvia usa la probabilidad de lluvia FUERTE del
+        # ensemble, que el prompt no incluía y por eso la narrativa
+        # decía "lluvia ligera" donde la tarjeta decía "chubascos
+        # fuertes". Al darle la frase exacta, ambas dicen lo mismo.
+        try:
+            frase_tarjeta = frase_lluvia(bloque)
+        except Exception:
+            frase_tarjeta = None
+        if frase_tarjeta:
+            partes.append(f"la tarjeta dice: «{frase_tarjeta}»")
         lineas.append(f"- {nombre} ({bloque.get('horas', '')}): "
                       + ", ".join(partes) + ".")
 
@@ -524,6 +558,21 @@ def construir_prompt_dia(datos, ensemble=None):
         resumen_24.append(f"ráfaga máxima {round(max(rafagas_24))} km/h")
     if resumen_24:
         lineas.append("- En 24 h: " + ", ".join(resumen_24) + ".")
+    # Viento del día en una sola dirección: la dominante entre los
+    # bloques, o "variable" si cada bloque sopla de un lado. Así la
+    # narrativa no junta dos direcciones opuestas en una frase ni
+    # mezcla la velocidad sostenida con las ráfagas en un número.
+    viento_dia = _viento_dominante_dia(bloques)
+    if viento_dia:
+        sostenido = (max((b.get('viento_max') or 0) for b in bloques)
+                     if bloques else 0)
+        rafaga = round(max(rafagas_24)) if rafagas_24 else None
+        linea_viento = f"- Viento del día: {viento_dia.lower()}"
+        if sostenido:
+            linea_viento += f", sostenido máx. {round(sostenido)} km/h"
+        if rafaga is not None:
+            linea_viento += f", ráfagas hasta {rafaga} km/h"
+        lineas.append(linea_viento + ".")
     if len(presiones_24) >= 2:
         delta = round(presiones_24[-1] - presiones_24[0], 1)
         sentido = ("baja" if delta < 0 else
@@ -554,6 +603,13 @@ def construir_prompt_dia(datos, ensemble=None):
         "llueve más fuerte o más leve, y qué significan el viento y "
         "la presión. Usa SOLO los datos de arriba: no inventes "
         "fechas, frentes con nombre, ni récords, y no escribas años. "
+        "Si un fenómeno no aparece en los datos, no lo menciones. "
+        "La intensidad de lluvia de cada bloque es la que dice la "
+        "tarjeta en los datos: si dice chubascos fuertes, no digas "
+        "lluvia ligera, y al revés. Del viento habla con una sola "
+        "dirección (la dominante del día) o di 'variable' si cambia: "
+        "no juntes dos direcciones en una frase, y no mezcles la "
+        "velocidad sostenida con las ráfagas en un solo número. "
         "No saludes ni te presentes, solo la actualización.")
     return "\n".join(lineas)
 
