@@ -713,26 +713,49 @@ def generar_conclusiones_bloques(datos, ensemble=None):
         return []
 
 
-def generar_caption_tarjeta(datos, ensemble=None):
+def generar_caption_tarjeta(datos, ensemble=None, narrativa_dia=None):
     """
     Caption corto para la foto de la tarjeta (límite de Telegram: 1024
-    caracteres). Incluye la fecha y las 3 conclusiones por bloque.
-    Con `ensemble`, las conclusiones usan la probabilidad real de lluvia.
+    caracteres). Incluye la fecha, la interpretación diaria de Gemini
+    (el mismo párrafo que abre el reporte ejecutivo) y las 3
+    conclusiones por bloque. Con `ensemble`, las conclusiones usan la
+    probabilidad real de lluvia. Sin narrativa (Gemini falló o no hay
+    llave), el caption queda como siempre: solo las viñetas.
+
+    Si el total pasara de 1000 caracteres, se recortan las viñetas
+    (nunca la narrativa): primero se quitan viñetas completas y, si
+    aun así no cupiera, se recorta la narrativa por palabras.
     """
     try:
         fecha = formatear_fecha_completa().split(" - ")[0]
         lineas = [f"📅 <b>{fecha} — TEMPOAL</b>", ""]
-        lineas.extend(generar_conclusiones_bloques(datos, ensemble=ensemble))
+        narrativa = (str(narrativa_dia).strip()
+                     if narrativa_dia else "")
+        if narrativa:
+            lineas.append(narrativa)
+            lineas.append("")
+        viñetas = generar_conclusiones_bloques(datos, ensemble=ensemble)
+        lineas.extend(viñetas)
         caption = "\n".join(lineas)
         if len(caption) <= 1000:
             return caption
-        # Recortar por viñetas completas para no superar el límite
-        recortado = [lineas[0], ""]
-        for viñeta in lineas[2:]:
+        # Recortar por viñetas completas (de la última a la primera)
+        # para no superar el límite; la narrativa se queda intacta.
+        base = [lineas[0], ""]
+        if narrativa:
+            base.extend([narrativa, ""])
+        recortado = list(base)
+        for viñeta in viñetas:
             if len("\n".join(recortado + [viñeta])) > 1000:
                 break
             recortado.append(viñeta)
-        return "\n".join(recortado)
+        caption = "\n".join(recortado)
+        if len(caption) <= 1000:
+            return caption
+        # Último recurso: la narrativa sola ya pasa el límite.
+        espacio = 1000 - len("\n".join([lineas[0], "", "…"]))
+        texto = narrativa[:espacio].rsplit(" ", 1)[0].strip() + "…"
+        return "\n".join([lineas[0], "", texto])
     except Exception as e:
         logger.error(f"Error generando caption de tarjeta: {e}")
         return "📅 <b>PRONÓSTICO DEL DÍA — TEMPOAL</b>"
