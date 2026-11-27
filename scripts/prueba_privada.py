@@ -278,6 +278,7 @@ def main():
 
     print("PASO 2c: Narrador semanal SIN llave (no debe haber red ni crash)...")
     os.environ.pop('GEMINI_API_KEY', None)  # la prueba es sin llave
+    os.environ.pop('GROQ_API_KEY', None)  # tampoco la del respaldo
     try:
         narrativa_sin_llave = obtener_narrativa_semanal(
             datos['daily'], ensemble=ensemble, api_key=None)
@@ -296,10 +297,13 @@ def main():
                          'prob_frio': 10, 'prob_muy_frio': 2,
                          'n_miembros': 30}]
         sin_llave = [
-            obtener_narrativa_dia(datos, ensemble=ensemble, api_key=None),
-            obtener_interpretacion_navidad(probs_prueba, api_key=None),
+            obtener_narrativa_dia(datos, ensemble=ensemble, api_key=None,
+                                  groq_api_key=None),
+            obtener_interpretacion_navidad(probs_prueba, api_key=None,
+                                           groq_api_key=None),
             obtener_explicacion_alertas(_alertas_ejemplo_muestra(),
-                                        api_key=None),
+                                        api_key=None,
+                                        groq_api_key=None),
         ]
     except Exception as e:
         errores.append(f"las narrativas sin llave lanzaron excepción: {e}")
@@ -346,11 +350,11 @@ def main():
         errores.append(f"no se pudo generar la muestra semanal: {e}")
         print(f"  ❌ FALLÓ ({e})")
 
-    print("PASO 4e: Reporte de muestra con las 3 narrativas de Gemini...")
+    print("PASO 4e: Reporte de muestra con las narrativas de Gemini...")
     # Ejemplos (NO son salida de Gemini: solo muestran dónde queda
-    # cada sección). Día y semana se derivan de los datos reales del
-    # día; la explicación, de las alertas reales (o de una alerta de
-    # ejemplo si hoy no hay, para que la sección se vea).
+    # cada sección). La semana y la explicación se derivan de los
+    # datos reales del día; la del día (ejemplo_dia) ya NO va en el
+    # texto: vive solo en el caption de la tarjeta (PASO 4b).
     try:
         ejemplo_dia = _ejemplo_dia(datos, ensemble)
         ejemplo_semana = _ejemplo_semana(datos)
@@ -361,13 +365,13 @@ def main():
         ejemplo_explicacion = _ejemplo_explicacion(alertas_muestra)
         mensaje_gemini = generar_mensaje_completo(
             datos, alertas_muestra, eventos, ensemble=ensemble,
-            narrativa_dia=ejemplo_dia,
             semana_narrativa=ejemplo_semana,
             explicacion_alertas=ejemplo_explicacion)
         ok = bool(mensaje_gemini)
         ok = ok and "LA SEMANA EN TEMPOAL" in mensaje_gemini
         if ejemplo_dia:
-            ok = ok and ejemplo_dia.splitlines()[0][:40] in mensaje_gemini
+            ok = (ok and ejemplo_dia.splitlines()[0][:40]
+                  not in mensaje_gemini)
         if ejemplo_explicacion:
             ok = (ok and ejemplo_explicacion.splitlines()[0][:40]
                   in mensaje_gemini)
