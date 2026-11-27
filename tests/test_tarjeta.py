@@ -160,6 +160,46 @@ class TestConclusiones(unittest.TestCase):
         # Límite de Telegram para captions: 1024 caracteres
         self.assertLessEqual(len(caption), 1024)
 
+    NARRATIVA_EJEMPLO = (
+        "Hoy lloverá todo el día, más fuerte por la noche, con "
+        "temperaturas estables entre 13 y 15 °C. Lleva paraguas.")
+
+    def test_caption_con_narrativa_mezcla_parrafo_y_viñetas(self):
+        caption = generar_caption_tarjeta(
+            _datos_ejemplo(), narrativa_dia=self.NARRATIVA_EJEMPLO)
+        self.assertLessEqual(len(caption), 1024)
+        self.assertIn(self.NARRATIVA_EJEMPLO, caption)
+        self.assertEqual(caption.count("•"), 3)
+        # La narrativa va antes que la primera viñeta.
+        self.assertLess(caption.index("Hoy lloverá"),
+                        caption.index("•"))
+
+    def test_caption_sin_narrativa_solo_viñetas(self):
+        caption = generar_caption_tarjeta(_datos_ejemplo())
+        self.assertEqual(caption.count("•"), 3)
+        self.assertNotIn("Hoy lloverá", caption)
+
+    def test_caption_largo_recorta_viñetas_no_la_narrativa(self):
+        # Narrativa de ~900 caracteres: el total pasa de 1000, así
+        # que se quitan las viñetas y la narrativa queda intacta.
+        narrativa = ("Hoy lloverá todo el día. " * 36).strip()
+        caption = generar_caption_tarjeta(
+            _datos_ejemplo(), narrativa_dia=narrativa)
+        self.assertLessEqual(len(caption), 1000)
+        self.assertIn(narrativa, caption)
+        self.assertNotIn("•", caption)
+
+    def test_caption_narrativa_enorme_se_recorta_por_palabras(self):
+        # Narrativa de ~1100 caracteres: ni sola cabe, así que se
+        # recorta por palabras y termina en "…".
+        narrativa = ("Hoy lloverá todo el día. " * 44).strip()
+        caption = generar_caption_tarjeta(
+            _datos_ejemplo(), narrativa_dia=narrativa)
+        self.assertLessEqual(len(caption), 1000)
+        self.assertNotIn("•", caption)
+        self.assertTrue(caption.rstrip().endswith("…"))
+        self.assertIn("Hoy lloverá todo el día", caption)
+
 
 class TestTarjetaImagen(unittest.TestCase):
     """Tests para la generación de la imagen de la tarjeta."""
