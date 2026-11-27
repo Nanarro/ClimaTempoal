@@ -301,6 +301,30 @@ class TestMensajeCompleto(unittest.TestCase):
         self.assertNotIn("Amanecer:", mensaje)
         self.assertIn("MONITOREO PROTECCIÓN CIVIL TEMPOAL", mensaje)
 
+    def test_trae_resumen_ejecutivo_y_horario(self):
+        # El texto trae el resumen ejecutivo de siempre: condiciones
+        # actuales con viento, pronóstico horario con las temperaturas
+        # y el viento a lo largo del día, próximos 3 días y
+        # estadísticas de la semana, más el resumen decisivo del día.
+        from src.formato import generar_mensaje_completo
+        mensaje = generar_mensaje_completo(_datos_ejemplo(), [], [])
+        self.assertIsNotNone(mensaje)
+        for seccion in ("RESUMEN EJECUTIVO", "CONDICIONES ACTUALES",
+                        "PRONÓSTICO HORARIO", "PRÓXIMOS 3 DÍAS",
+                        "ESTADÍSTICAS SEMANALES", "Hoy en Tempoal:"):
+            self.assertIn(seccion, mensaje)
+        self.assertIn("Viento:", mensaje)
+
+    def test_no_repite_los_bloques_del_caption(self):
+        # Los 3 bloques ya van en el caption de la tarjeta; el texto
+        # no los repite (antes el canal mostraba lo mismo dos veces).
+        from src.formato import generar_mensaje_completo
+        mensaje = generar_mensaje_completo(_datos_ejemplo(), [], [])
+        self.assertIsNotNone(mensaje)
+        for vineta in ("POR LA MAÑANA (06–12 h):",
+                       "TARDE (12–18 h):", "NOCHE (18–00 h):"):
+            self.assertNotIn(vineta, mensaje)
+
 
 class TestDecoracionDiciembre(unittest.TestCase):
     """La decoración navideña se dibuja sin errores."""
