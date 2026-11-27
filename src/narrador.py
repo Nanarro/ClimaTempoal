@@ -262,7 +262,9 @@ def llamar_gemini(prompt, api_key, modelo=MODELO_GEMINI,
 
     Devuelve el texto crudo de la respuesta o None. Sin llave no hay
     llamada de red. Máximo 2 intentos (timeout 20 s): reintenta el
-    timeout y el error de red; el error HTTP es terminal. La llave
+    timeout, el error de red y los errores HTTP transitorios (429 y
+    5xx, con 10 s de espera, porque Google mismo pide reintentarlos);
+    los demás errores HTTP (400/401/403/404) son terminales. La llave
     viaja como parámetro ?key= en la URL (el patrón REST documentado
     de Google; las llaves nuevas con prefijo "AQ." dan 404 si van en
     el header x-goog-api-key) y nunca se registra en el log: la URL
@@ -308,6 +310,15 @@ def llamar_gemini(prompt, api_key, modelo=MODELO_GEMINI,
                                .get("error", {}).get("message", ""))
                 except Exception:
                     mensaje = ""
+                # 429 y 5xx son transitorios (Google mismo pide
+                # reintentarlos): se reintenta una vez tras 10 s.
+                # 400/401/403/404 son de configuración: no se reintenta.
+                if codigo in (429, 500, 502, 503, 504) and intento < 2:
+                    logger.warning(f"🤖 {etiqueta}: error HTTP "
+                                   f"{codigo} ({mensaje[:200]}), "
+                                   f"reintentando...")
+                    time.sleep(10)
+                    continue
                 logger.warning(f"🤖 {etiqueta}: error HTTP "
                                f"{codigo} ({mensaje[:200]}), se omite")
                 return None
