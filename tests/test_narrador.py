@@ -110,6 +110,15 @@ def _respuesta_gemini(texto):
     return mock
 
 
+def _respuesta_error(codigo, mensaje):
+    """Respuesta simulada que falla con ese código HTTP de Gemini."""
+    mock = MagicMock()
+    mock.status_code = codigo
+    mock.json.return_value = {'error': {'message': mensaje}}
+    mock.raise_for_status.side_effect = requests.HTTPError(response=mock)
+    return mock
+
+
 TEXTO_BUENO = (
     "La lluvia se mantiene el sábado y se corta el domingo, cuando "
     "entra aire más seco.\n"
@@ -408,11 +417,41 @@ class TestLlamarGemini(unittest.TestCase):
             mock_post.assert_not_called()
 
     def test_error_http_devuelve_none(self):
-        mock = MagicMock()
-        mock.raise_for_status.side_effect = requests.HTTPError(
-            response=MagicMock(status_code=429))
-        with patch('src.narrador.requests.post', return_value=mock):
+        # 400 es de configuración: no se reintenta, devuelve None.
+        with patch('src.narrador.requests.post',
+                   return_value=_respuesta_error(400, 'bad request')):
             self.assertIsNone(llamar_gemini("prompt", "k"))
+
+    def test_error_503_reintenta_y_funciona(self):
+        # 503 es transitorio: se reintenta una vez tras 10 s.
+        with patch('src.narrador.requests.post') as mock_post:
+            mock_post.side_effect = [
+                _respuesta_error(503, 'high demand'),
+                _respuesta_gemini("Hola.")]
+            with patch('src.narrador.time.sleep') as mock_sleep:
+                self.assertEqual(
+                    llamar_gemini("prompt", "k"), "Hola.")
+            self.assertEqual(mock_post.call_count, 2)
+            mock_sleep.assert_called_once_with(10)
+
+    def test_error_503_dos_veces_devuelve_none(self):
+        with patch('src.narrador.requests.post') as mock_post:
+            mock_post.side_effect = [
+                _respuesta_error(503, 'high demand'),
+                _respuesta_error(503, 'high demand')]
+            with patch('src.narrador.time.sleep'):
+                self.assertIsNone(llamar_gemini("prompt", "k"))
+            self.assertEqual(mock_post.call_count, 2)
+
+    def test_error_404_no_reintenta(self):
+        # 404 es de configuración: una sola llamada, sin espera.
+        with patch('src.narrador.requests.post') as mock_post:
+            mock_post.side_effect = [
+                _respuesta_error(404, 'not found')]
+            with patch('src.narrador.time.sleep') as mock_sleep:
+                self.assertIsNone(llamar_gemini("prompt", "k"))
+            mock_post.assert_called_once()
+            mock_sleep.assert_not_called()
 
 
 class TestConstruirPromptDia(unittest.TestCase):
