@@ -179,6 +179,13 @@ class TestConstruirPrompt(unittest.TestCase):
         self.assertIn("no inventes", prompt)
         self.assertIn("3 o 4 líneas", prompt)
 
+    def test_no_mencionar_fenomenos_ausentes(self):
+        # La niebla de la corrida #152 era dato real (código 45), no
+        # invento; la regla es no mencionar fenómenos que NO estén
+        # en los datos que recibe.
+        prompt = construir_prompt(_daily_ejemplo())
+        self.assertIn("Si un fenómeno no aparece en los datos", prompt)
+
     def test_con_resumen_ensemble_incluye_bloques(self):
         resumen = {'prob_lluvia': {'POR LA MAÑANA': 100, 'TARDE': 90,
                                    'NOCHE': 80},
@@ -521,6 +528,57 @@ class TestConstruirPromptDia(unittest.TestCase):
         self.assertIn("no inventes", prompt)
         self.assertIn("3 a 5 líneas", prompt)
         self.assertIn("no escribas años", prompt)
+
+    def test_tarjeta_marca_intensidad_de_lluvia_por_bloque(self):
+        # 2 de 5 miembros con lluvia fuerte (>10 mm por bloque):
+        # la tarjeta dice "con algunos chubascos fuertes" y el
+        # prompt debe llevar esa misma intensidad, no "ligera".
+        horas = [f"{FECHA}T{h:02d}:00" for h in range(24)]
+        hourly = {'time': horas}
+        for m in range(1, 6):
+            hourly[f'temperature_2m_member{m:02d}'] = [15.0] * 24
+            lluvia = 2.0 if m <= 2 else 0.5
+            hourly[f'precipitation_member{m:02d}'] = [lluvia] * 24
+        prompt = construir_prompt_dia(_datos_completos(),
+                                      ensemble={'hourly': hourly})
+        self.assertIn("la tarjeta dice", prompt)
+        self.assertIn("con algunos chubascos fuertes", prompt)
+
+    def test_tarjeta_marca_lluvia_ligera_cuando_no_hay_fuerte(self):
+        # Todos los miembros con lluvia leve: la tarjeta dice
+        # "pero ligera" y el prompt debe llevar eso mismo.
+        horas = [f"{FECHA}T{h:02d}:00" for h in range(24)]
+        hourly = {'time': horas}
+        for m in range(1, 6):
+            hourly[f'temperature_2m_member{m:02d}'] = [15.0] * 24
+            hourly[f'precipitation_member{m:02d}'] = [0.5] * 24
+        prompt = construir_prompt_dia(_datos_completos(),
+                                      ensemble={'hourly': hourly})
+        self.assertIn("la tarjeta dice", prompt)
+        self.assertIn("pero ligera", prompt)
+
+    def test_viento_dominante_del_dia_una_sola_direccion(self):
+        # Fixture: todas las horas soplan del norte (350°).
+        prompt = construir_prompt_dia(_datos_completos())
+        self.assertIn("Viento del día: norte", prompt)
+        self.assertIn("sostenido máx. 5 km/h", prompt)
+        self.assertIn("ráfagas hasta 8 km/h", prompt)
+        self.assertIn("una sola dirección", prompt)
+
+    def test_viento_variable_si_cada_bloque_sopla_distinto(self):
+        # Mañana del norte, tarde del este, noche del sur: no hay
+        # mayoría, así que el día es "variable", no dos direcciones
+        # juntas en una frase.
+        datos = _datos_completos()
+        dirs = ([350.0] * 6 + [350.0] * 6 + [90.0] * 6 + [180.0] * 6)
+        datos['hourly']['wind_direction_10m'] = dirs
+        prompt = construir_prompt_dia(datos)
+        self.assertIn("Viento del día: variable", prompt)
+
+    def test_instrucciones_intensidad_y_viento(self):
+        prompt = construir_prompt_dia(_datos_completos())
+        self.assertIn("si dice chubascos fuertes", prompt)
+        self.assertIn("Si un fenómeno no aparece en los datos", prompt)
 
 
 class TestConstruirPromptNavidad(unittest.TestCase):
