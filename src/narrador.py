@@ -24,9 +24,12 @@ import requests
 
 from .utils import logger, DIAS_ESP, obtener_hora_mexico
 
-# Gemini 2.5 Flash: capa gratuita de Google AI Studio (sin tarjeta,
-# 1,500 llamadas/día; el bot hace 1 al día).
-MODELO_GEMINI = "gemini-2.5-flash"
+# Gemini 3.8 Flash: capa gratuita de Google AI Studio (sin tarjeta;
+# el bot hace hasta 4 llamadas al día, una por sección narrada).
+# Antes era gemini-2.5-flash, pero Google limitó los modelos 2.5 a
+# quienes ya los usaban: con una llave nueva devuelve HTTP 404, así
+# que se usa el modelo vigente recomendado por Google (3.8 Flash).
+MODELO_GEMINI = "gemini-3.8-flash"
 URL_GEMINI = ("https://generativelanguage.googleapis.com/v1beta/models/"
               "{modelo}:generateContent")
 
@@ -260,15 +263,17 @@ def llamar_gemini(prompt, api_key, modelo=MODELO_GEMINI,
     Devuelve el texto crudo de la respuesta o None. Sin llave no hay
     llamada de red. Máximo 2 intentos (timeout 20 s): reintenta el
     timeout y el error de red; el error HTTP es terminal. La llave
-    nunca se registra en el log.
+    viaja como parámetro ?key= en la URL (el patrón REST documentado
+    de Google; las llaves nuevas con prefijo "AQ." dan 404 si van en
+    el header x-goog-api-key) y nunca se registra en el log: la URL
+    no se registra.
     """
     try:
         llave = (api_key or "").strip()
         if not llave:
             return None
-        url = URL_GEMINI.format(modelo=modelo)
-        headers = {"x-goog-api-key": llave,
-                   "Content-Type": "application/json"}
+        url = URL_GEMINI.format(modelo=modelo) + "?key=" + llave
+        headers = {"Content-Type": "application/json"}
         cuerpo = {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {"temperature": 0.3,
@@ -293,8 +298,18 @@ def llamar_gemini(prompt, api_key, modelo=MODELO_GEMINI,
             except requests.HTTPError as e:
                 codigo = (e.response.status_code
                           if e.response is not None else "?")
+                # El cuerpo del error dice el porqué (p. ej. el modelo
+                # no existe para esta llave); se registra recortado
+                # para que el próximo fallo se diagnostique solo.
+                # El cuerpo nunca contiene la llave.
+                mensaje = ""
+                try:
+                    mensaje = (e.response.json()
+                               .get("error", {}).get("message", ""))
+                except Exception:
+                    mensaje = ""
                 logger.warning(f"🤖 {etiqueta}: error HTTP "
-                               f"{codigo}, se omite")
+                               f"{codigo} ({mensaje[:200]}), se omite")
                 return None
             except requests.RequestException as e:
                 logger.warning(f"🤖 {etiqueta}: error de red ({e})")
