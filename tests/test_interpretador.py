@@ -443,11 +443,16 @@ class TestIntegracionMensaje(unittest.TestCase):
         self.assertIsNotNone(mensaje)
         self.assertIn("MONITOREO PROTECCIÓN CIVIL TEMPOAL", mensaje)
         self.assertIn("Hoy en Tempoal: día de lluvias", mensaje)
-        self.assertIn("Lluvia casi segura (92%)", mensaje)
         self.assertIn("paraguas", mensaje)
-        # Viento flojo (2-7 km/h): no debe aparecer en el texto.
-        self.assertNotIn("viento", mensaje.lower())
-        self.assertNotIn("km/h", mensaje)
+        # El viento flojo no se interpreta en la parte narrativa (no hay
+        # frase de "viento moderado/fuerte" ni se dice qué causa), pero
+        # el dato sí va en el resumen ejecutivo: condiciones actuales
+        # y pronóstico horario.
+        self.assertNotIn("viento moderado", mensaje.lower())
+        self.assertNotIn("viento fuerte", mensaje.lower())
+        self.assertIn("Viento: 5.0 km/h", mensaje)
+        # Los bloques ya no van en el texto: están en el caption.
+        self.assertNotIn("Lluvia casi segura (92%)", mensaje)
         # Presión normal: tampoco aparece.
         self.assertNotIn("presión", mensaje.lower())
 
@@ -483,8 +488,11 @@ class TestIntegracionMensaje(unittest.TestCase):
         datos = self._datos()
         mensaje = generar_mensaje_completo(
             datos, [], [], ensemble=ensemble)
-        # El ensemble sintético dice 60% en la mañana (no 38% det).
-        self.assertIn("60%", mensaje)
+        # Con ensemble, ningún bloque llega a 70% (60/20/0): el resumen
+        # del día dice "chubascos ocasionales", no "día de lluvias".
+        self.assertIn("día con chubascos ocasionales", mensaje)
+        mensaje_sin = generar_mensaje_completo(datos, [], [])
+        self.assertIn("día de lluvias", mensaje_sin)
 
 
 if __name__ == '__main__':
