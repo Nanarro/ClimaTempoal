@@ -167,7 +167,8 @@ def generar_estadisticas_semana(daily):
         return ""
 
 def generar_mensaje_completo(data, alertas, eventos_especiales,
-                            ensemble=None, semana_narrativa=None):
+                            ensemble=None, semana_narrativa=None,
+                            narrativa_dia=None, explicacion_alertas=None):
     """
     Genera el mensaje completo formateado para Telegram.
 
@@ -192,6 +193,14 @@ def generar_mensaje_completo(data, alertas, eventos_especiales,
     Con `semana_narrativa` (texto del narrador Gemini, opcional), se
     agrega la sección "LA SEMANA EN TEMPOAL" justo después de
     "PRÓXIMOS 3 DÍAS". Sin ella, la sección no aparece.
+
+    Con `narrativa_dia` (texto del narrador Gemini, opcional), el
+    párrafo va justo después de la fecha y antes del "RESUMEN
+    EJECUTIVO", como introducción del reporte. Con
+    `explicacion_alertas` (texto del narrador Gemini, opcional), la
+    explicación va dentro de la sección de alertas, justo después de
+    las líneas de alerta (solo cuando hay alertas). Sin ellos, el
+    mensaje queda exactamente como antes.
     """
     try:
         current = data.get('current') or {}
@@ -224,6 +233,11 @@ def generar_mensaje_completo(data, alertas, eventos_especiales,
         # Construir mensaje
         msg = "🚨 <b>MONITOREO PROTECCIÓN CIVIL TEMPOAL</b> 🚨\n"
         msg += f"📅 <i>{formatear_fecha_completa()}</i>\n\n"
+
+        # Narrativa del día con Gemini: introducción del reporte (si el
+        # narrador devolvió texto validado; si no, no aparece nada)
+        if narrativa_dia and str(narrativa_dia).strip():
+            msg += f"{str(narrativa_dia).strip()}\n\n"
 
         # Resumen ejecutivo (de siempre)
         msg += generar_resumen_ejecutivo(
@@ -312,6 +326,10 @@ def generar_mensaje_completo(data, alertas, eventos_especiales,
             msg += "\n📢 <b>⚠️ ALERTAS METEOROLÓGICAS:</b>\n\n"
             for alerta in alertas:
                 msg += f"{alerta}\n\n"
+            # Explicación de las alertas en palabras simples (Gemini;
+            # solo cuando hay alertas y el narrador devolvió texto)
+            if explicacion_alertas and str(explicacion_alertas).strip():
+                msg += f"{str(explicacion_alertas).strip()}\n\n"
         else:
             msg += "\n✅ <b>Sin alertas meteorológicas</b>\n"
 
@@ -718,3 +736,39 @@ def generar_caption_tarjeta(datos, ensemble=None):
     except Exception as e:
         logger.error(f"Error generando caption de tarjeta: {e}")
         return "📅 <b>PRONÓSTICO DEL DÍA — TEMPOAL</b>"
+
+
+# Caption de la gráfica de Navidad (el mismo de siempre).
+CAPTION_NAVIDAD_BASE = (
+    "🎄 <b>¿FRÍO EN NAVIDAD?</b> Probabilidad de mínima menor a "
+    "12 °C rumbo al 25 de diciembre, según el ensemble GFS "
+    "(31 miembros). A 30 días la incertidumbre es muy alta.")
+
+
+def generar_caption_navidad(datos, interpretacion=None):
+    """
+    Caption de la foto de la gráfica de Navidad (límite de Telegram:
+    1024 caracteres; aquí se usa 1000 como margen).
+
+    `datos` es la lista de probabilidades por día (ver
+    calcular_probabilidades_frio); el caption base no depende de
+    ella y queda igual que siempre. Si `interpretacion` trae la
+    lectura de Gemini (1-2 líneas), se agrega al final; si el total
+    pasara de 1000 caracteres, se recorta la interpretación (nunca
+    el caption base).
+    """
+    try:
+        caption = CAPTION_NAVIDAD_BASE
+        texto = (str(interpretacion).strip()
+                 if interpretacion else "")
+        if texto:
+            if len(caption) + 2 + len(texto) > 1000:
+                espacio = 1000 - len(caption) - 2
+                if espacio < 20:
+                    return caption
+                texto = texto[:espacio].rsplit(" ", 1)[0].strip() + "…"
+            caption = caption + "\n\n" + texto
+        return caption
+    except Exception as e:
+        logger.error(f"Error generando caption de Navidad: {e}")
+        return CAPTION_NAVIDAD_BASE
