@@ -355,6 +355,24 @@ class TestMensajeCompleto(unittest.TestCase):
             self.assertIn(seccion, mensaje)
         self.assertIn("Viento:", mensaje)
 
+    def test_resumen_ejecutivo_trae_mm_de_hoy(self):
+        # El ejecutivo trae el total de lluvia esperada hoy en mm,
+        # no solo la probabilidad: el fixture trae 5.0 mm.
+        from src.formato import generar_mensaje_completo
+        mensaje = generar_mensaje_completo(_datos_ejemplo(), [], [])
+        self.assertIn("Lluvia esperada hoy: 5 mm", mensaje)
+
+    def test_resumen_ejecutivo_dia_seco_trae_cero_mm(self):
+        from src.formato import generar_resumen_ejecutivo
+        resumen = generar_resumen_ejecutivo(
+            {'temperatura': 25.0},
+            {'temperature_2m_max': [28.0],
+             'temperature_2m_min': [20.0],
+             'precipitation_sum': [0.0],
+             'precipitation_probability_max': [10]})
+        self.assertIn("Día seco", resumen)
+        self.assertIn("Lluvia esperada hoy: 0 mm", resumen)
+
     def test_no_repite_los_bloques_del_caption(self):
         # Los 3 bloques ya van en el caption de la tarjeta; el texto
         # no los repite (antes el canal mostraba lo mismo dos veces).
