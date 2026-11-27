@@ -16,10 +16,21 @@ import requests
 # Agregar src al path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-from src.formato import generar_mensaje_completo, obtener_bloques_diarios
+from src.formato import (
+    generar_caption_navidad,
+    generar_mensaje_completo,
+    obtener_bloques_diarios,
+)
 from src.narrador import (
     MODELO_GEMINI,
     construir_prompt,
+    construir_prompt_alertas,
+    construir_prompt_dia,
+    construir_prompt_navidad,
+    llamar_gemini,
+    obtener_explicacion_alertas,
+    obtener_interpretacion_navidad,
+    obtener_narrativa_dia,
     obtener_narrativa_semanal,
     resumen_ensemble_hoy,
     validar_narrativa,
@@ -104,6 +115,38 @@ TEXTO_BUENO = (
     "entra aire más seco.\n"
     "El domingo será el día más cálido de la semana, con 26 °C.\n"
     "Las mañanas siguen frescas, entre 12 y 15 °C.")
+
+
+def _probs_navidad_ejemplo():
+    """Probabilidades de frío por día, como calcular_probabilidades_frio.
+
+    28 días (28 nov – 25 dic): el frío sube hacia el 19-21 dic (pico
+    37%) y el 25 de diciembre marca 40% (<12 °C) y 23% (<10 °C).
+    """
+    from datetime import date, timedelta
+    inicio = date(2026, 11, 28)
+    probs = []
+    for i in range(28):
+        fecha = inicio + timedelta(days=i)
+        if fecha.day == 25 and fecha.month == 12:
+            frio, muy_frio = 40, 23
+        elif fecha.day in (19, 20, 21) and fecha.month == 12:
+            frio, muy_frio = 37, 20
+        elif fecha.month == 12:
+            frio, muy_frio = 25, 12
+        else:
+            frio, muy_frio = 10, 3
+        probs.append({'fecha': fecha, 'sin_datos': False,
+                      'prob_frio': frio, 'prob_muy_frio': muy_frio,
+                      'n_miembros': 30})
+    return probs
+
+
+def _alertas_ejemplo():
+    """Una alerta tal como la construye analizar_riesgos_climaticos."""
+    return ["🌧️ <b>VIERNES 27/11: LLUVIA INTENSA</b>\n"
+            "   💧 Acumulado: 22 mm\n"
+            "   ☂️ No olvides paraguas"]
 
 
 class TestConstruirPrompt(unittest.TestCase):
@@ -325,6 +368,315 @@ class TestIntegracionMensaje(unittest.TestCase):
         mensaje_vacio = generar_mensaje_completo(
             _datos_completos(), [], [], semana_narrativa="   ")
         self.assertNotIn("LA SEMANA EN TEMPOAL", mensaje_vacio)
+
+
+class TestLlamarGemini(unittest.TestCase):
+    """El helper compartido: una llamada, nunca excepciones."""
+
+    def test_exito_devuelve_texto(self):
+        with patch('src.narrador.requests.post') as mock_post:
+            mock_post.return_value = _respuesta_gemini("Hola.")
+            self.assertEqual(
+                llamar_gemini("prompt", "llave-falsa"), "Hola.")
+            mock_post.assert_called_once()
+
+    def test_sin_llave_no_hay_llamada_de_red(self):
+        with patch('src.narrador.requests.post') as mock_post:
+            self.assertIsNone(llamar_gemini("prompt", None))
+            self.assertIsNone(llamar_gemini("prompt", "   "))
+            mock_post.assert_not_called()
+
+    def test_error_http_devuelve_none(self):
+        mock = MagicMock()
+        mock.raise_for_status.side_effect = requests.HTTPError(
+            response=MagicMock(status_code=429))
+        with patch('src.narrador.requests.post', return_value=mock):
+            self.assertIsNone(llamar_gemini("prompt", "k"))
+
+
+class TestConstruirPromptDia(unittest.TestCase):
+    """El prompt del día lleva hoy: ahora, bloques, 24 h y presión."""
+
+    def test_incluye_condiciones_actuales_y_bloques(self):
+        prompt = construir_prompt_dia(_datos_completos())
+        self.assertIn("14.0 °C", prompt)
+        self.assertIn("95%", prompt)
+        self.assertIn("POR LA MAÑANA", prompt)
+        self.assertIn("TARDE", prompt)
+        self.assertIn("NOCHE", prompt)
+        self.assertIn("96%", prompt)  # prob. del bloque de la mañana
+        self.assertIn("Amanecer 06:30", prompt)
+        self.assertIn("Atardecer 17:45", prompt)
+        self.assertIn("Confianza", prompt)
+
+    def test_incluye_resumen_24h_y_presion(self):
+        prompt = construir_prompt_dia(_datos_completos())
+        self.assertIn("mínima 13.7 °C", prompt)
+        self.assertIn("máxima 17.0 °C", prompt)
+        self.assertIn("Presión:", prompt)
+
+    def test_con_ensemble_marca_probabilidad_real(self):
+        horas = [f"{FECHA}T{h:02d}:00" for h in range(24)]
+        hourly = {'time': horas}
+        for m in range(1, 6):
+            hourly[f'temperature_2m_member{m:02d}'] = [15.0] * 24
+            hourly[f'precipitation_member{m:02d}'] = [0.5] * 24
+        prompt = construir_prompt_dia(_datos_completos(),
+                                      ensemble={'hourly': hourly})
+        self.assertIn("100%", prompt)
+        self.assertIn("ensemble ECMWF", prompt)
+
+    def test_instrucciones_de_no_inventar(self):
+        prompt = construir_prompt_dia(_datos_completos())
+        self.assertIn("SOLO los datos", prompt)
+        self.assertIn("no inventes", prompt)
+        self.assertIn("3 a 5 líneas", prompt)
+        self.assertIn("no escribas años", prompt)
+
+
+class TestConstruirPromptNavidad(unittest.TestCase):
+    """El prompt de Navidad lleva la distribución de 30 días."""
+
+    def test_incluye_dias_probabilidades_y_25(self):
+        prompt = construir_prompt_navidad(_probs_navidad_ejemplo())
+        self.assertIn("28/11", prompt)
+        self.assertIn("25/12", prompt)
+        self.assertIn("40%", prompt)  # el 25 de diciembre
+        self.assertIn("37%", prompt)  # el pico 19-21 dic
+        self.assertIn("Tendencia:", prompt)
+
+    def test_instrucciones_de_no_inventar(self):
+        prompt = construir_prompt_navidad(_probs_navidad_ejemplo())
+        self.assertIn("SOLO", prompt)
+        self.assertIn("no inventes", prompt)
+        self.assertIn("1 o 2 líneas", prompt)
+
+
+class TestConstruirPromptAlertas(unittest.TestCase):
+    """El prompt de alertas lleva las alertas limpias de HTML."""
+
+    def test_incluye_alertas_sin_html(self):
+        prompt = construir_prompt_alertas(_alertas_ejemplo())
+        self.assertIn("LLUVIA INTENSA", prompt)
+        self.assertIn("22 mm", prompt)
+        self.assertIn("VIERNES 27/11", prompt)
+        self.assertNotIn("<b>", prompt)
+        self.assertNotIn("</b>", prompt)
+
+    def test_instrucciones_de_no_inventar(self):
+        prompt = construir_prompt_alertas(_alertas_ejemplo())
+        self.assertIn("SOLO la información", prompt)
+        self.assertIn("no inventes", prompt)
+
+
+TEXTO_DIA_BUENO = (
+    "La lluvia se mantiene todo el día, más fuerte por la mañana "
+    "con 96% de probabilidad.\n"
+    "Hará frío, con máxima de 17 °C y mínima de 14 °C.\n"
+    "La presión se mantiene estable, así que la lluvia seguirá.")
+
+
+class TestObtenerNarrativaDia(unittest.TestCase):
+    """La narrativa del día es best-effort y nunca lanza excepciones."""
+
+    def test_exito_devuelve_texto_validado(self):
+        with patch('src.narrador.requests.post') as mock_post:
+            mock_post.return_value = _respuesta_gemini(TEXTO_DIA_BUENO)
+            texto = obtener_narrativa_dia(_datos_completos(),
+                                          api_key="llave-falsa")
+        self.assertEqual(texto, TEXTO_DIA_BUENO)
+
+    def test_error_de_red_devuelve_none(self):
+        with patch('src.narrador.requests.post',
+                   side_effect=requests.Timeout()):
+            self.assertIsNone(obtener_narrativa_dia(
+                _datos_completos(), api_key="llave-falsa"))
+
+    def test_texto_invalido_devuelve_none(self):
+        with patch('src.narrador.requests.post') as mock_post:
+            mock_post.return_value = _respuesta_gemini(
+                "Como en 2026, lloverá todo el día.\nSegunda línea.")
+            self.assertIsNone(obtener_narrativa_dia(
+                _datos_completos(), api_key="llave-falsa"))
+
+    def test_fecha_de_manana_rechazada(self):
+        # La ventana del día es solo hoy: mencionar el 28 de
+        # noviembre (mañana) no pasa la validación
+        with patch('src.narrador.requests.post') as mock_post:
+            mock_post.return_value = _respuesta_gemini(
+                "Hoy llueve y el 28 de noviembre seguirá lloviendo.\n"
+                "Segunda línea.")
+            self.assertIsNone(obtener_narrativa_dia(
+                _datos_completos(), api_key="llave-falsa"))
+
+    def test_sin_llave_no_hay_llamada_de_red(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('GEMINI_API_KEY', None)
+            with patch('src.narrador.requests.post') as mock_post:
+                self.assertIsNone(obtener_narrativa_dia(
+                    _datos_completos(), api_key=None))
+                mock_post.assert_not_called()
+
+
+TEXTO_NAVIDAD_BUENO = (
+    "El frío se concentra entre el 19 y el 21 de diciembre, con 37% "
+    "de probabilidad.\n"
+    "El 25 de diciembre pinta frío, con 40% de probabilidad de "
+    "mínima menor a 12 °C.")
+
+
+class TestObtenerInterpretacionNavidad(unittest.TestCase):
+    """La lectura de la gráfica es best-effort y nunca lanza."""
+
+    def test_exito_devuelve_texto_validado(self):
+        with patch('src.narrador.requests.post') as mock_post:
+            mock_post.return_value = _respuesta_gemini(TEXTO_NAVIDAD_BUENO)
+            texto = obtener_interpretacion_navidad(
+                _probs_navidad_ejemplo(), api_key="llave-falsa")
+        self.assertEqual(texto, TEXTO_NAVIDAD_BUENO)
+
+    def test_sin_datos_devuelve_none(self):
+        self.assertIsNone(obtener_interpretacion_navidad(
+            [], api_key="llave-falsa"))
+        sin_datos = [{'fecha': p['fecha'], 'sin_datos': True,
+                      'prob_frio': None, 'prob_muy_frio': None,
+                      'n_miembros': 0}
+                     for p in _probs_navidad_ejemplo()]
+        self.assertIsNone(obtener_interpretacion_navidad(
+            sin_datos, api_key="llave-falsa"))
+
+    def test_error_http_devuelve_none(self):
+        mock = MagicMock()
+        mock.raise_for_status.side_effect = requests.HTTPError(
+            response=MagicMock(status_code=400))
+        with patch('src.narrador.requests.post', return_value=mock):
+            self.assertIsNone(obtener_interpretacion_navidad(
+                _probs_navidad_ejemplo(), api_key="llave-falsa"))
+
+    def test_texto_invalido_devuelve_none(self):
+        with patch('src.narrador.requests.post') as mock_post:
+            mock_post.return_value = _respuesta_gemini(
+                "Será un récord de frío en 2026.\nSegunda línea.")
+            self.assertIsNone(obtener_interpretacion_navidad(
+                _probs_navidad_ejemplo(), api_key="llave-falsa"))
+
+    def test_sin_llave_no_hay_llamada_de_red(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('GEMINI_API_KEY', None)
+            with patch('src.narrador.requests.post') as mock_post:
+                self.assertIsNone(obtener_interpretacion_navidad(
+                    _probs_navidad_ejemplo(), api_key=None))
+                mock_post.assert_not_called()
+
+
+TEXTO_ALERTAS_BUENO = (
+    "Lluvia intensa de 22 mm: lloverá mucho en poco tiempo, puede "
+    "haber encharcamientos.\n"
+    "Evita cruzar arroyos y maneja con cuidado.")
+
+
+class TestObtenerExplicacionAlertas(unittest.TestCase):
+    """La explicación de alertas es best-effort y nunca lanza."""
+
+    def test_exito_devuelve_texto_validado(self):
+        with patch('src.narrador.requests.post') as mock_post:
+            mock_post.return_value = _respuesta_gemini(TEXTO_ALERTAS_BUENO)
+            texto = obtener_explicacion_alertas(
+                _alertas_ejemplo(), api_key="llave-falsa",
+                fechas_ventana=VENTANA)
+        self.assertEqual(texto, TEXTO_ALERTAS_BUENO)
+
+    def test_sin_alertas_devuelve_none_sin_red(self):
+        with patch('src.narrador.requests.post') as mock_post:
+            self.assertIsNone(obtener_explicacion_alertas(
+                [], api_key="llave-falsa"))
+            self.assertIsNone(obtener_explicacion_alertas(
+                None, api_key="llave-falsa"))
+            mock_post.assert_not_called()
+
+    def test_error_de_red_devuelve_none(self):
+        with patch('src.narrador.requests.post',
+                   side_effect=requests.ConnectionError()):
+            self.assertIsNone(obtener_explicacion_alertas(
+                _alertas_ejemplo(), api_key="llave-falsa",
+                fechas_ventana=VENTANA))
+
+    def test_sin_llave_no_hay_llamada_de_red(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('GEMINI_API_KEY', None)
+            with patch('src.narrador.requests.post') as mock_post:
+                self.assertIsNone(obtener_explicacion_alertas(
+                    _alertas_ejemplo(), api_key=None,
+                    fechas_ventana=VENTANA))
+                mock_post.assert_not_called()
+
+
+class TestGenerarCaptionNavidad(unittest.TestCase):
+    """El caption de Navidad: base igual y lectura opcional."""
+
+    BASE = ("🎄 <b>¿FRÍO EN NAVIDAD?</b> Probabilidad de mínima menor a "
+            "12 °C rumbo al 25 de diciembre, según el ensemble GFS "
+            "(31 miembros). A 30 días la incertidumbre es muy alta.")
+
+    def test_sin_interpretacion_es_el_caption_base(self):
+        self.assertEqual(
+            generar_caption_navidad(_probs_navidad_ejemplo()), self.BASE)
+        self.assertEqual(generar_caption_navidad([], None), self.BASE)
+        self.assertEqual(
+            generar_caption_navidad(_probs_navidad_ejemplo(), ""), self.BASE)
+
+    def test_con_interpretacion_se_agrega_al_final(self):
+        caption = generar_caption_navidad(
+            _probs_navidad_ejemplo(), interpretacion=TEXTO_NAVIDAD_BUENO)
+        self.assertTrue(caption.startswith(self.BASE))
+        self.assertIn(TEXTO_NAVIDAD_BUENO, caption)
+        self.assertLessEqual(len(caption), 1000)
+
+    def test_interpretacion_larga_se_recorta_sin_tocar_la_base(self):
+        larga = "Palabra " * 200
+        caption = generar_caption_navidad(
+            _probs_navidad_ejemplo(), interpretacion=larga)
+        self.assertTrue(caption.startswith(self.BASE))
+        self.assertLessEqual(len(caption), 1000)
+
+
+class TestIntegracionMensajeGemini(unittest.TestCase):
+    """Las 3 narrativas nuevas aparecen solo donde les toca."""
+
+    def test_narrativa_dia_va_despues_de_la_fecha(self):
+        mensaje = generar_mensaje_completo(
+            _datos_completos(), [], [],
+            narrativa_dia="Párrafo de prueba del día.")
+        self.assertIsNotNone(mensaje)
+        self.assertIn("Párrafo de prueba del día.", mensaje)
+        self.assertLess(mensaje.index("MONITOREO PROTECCIÓN CIVIL"),
+                        mensaje.index("Párrafo de prueba del día."))
+        self.assertLess(mensaje.index("Párrafo de prueba del día."),
+                        mensaje.index("RESUMEN EJECUTIVO"))
+
+    def test_sin_narrativa_dia_no_aparece_nada_extra(self):
+        mensaje = generar_mensaje_completo(_datos_completos(), [], [])
+        self.assertIsNotNone(mensaje)
+        self.assertNotIn("Párrafo de prueba", mensaje)
+
+    def test_explicacion_alertas_dentro_de_la_seccion(self):
+        mensaje = generar_mensaje_completo(
+            _datos_completos(), _alertas_ejemplo(), [],
+            explicacion_alertas="Explicación de prueba.")
+        self.assertIsNotNone(mensaje)
+        self.assertIn("Explicación de prueba.", mensaje)
+        self.assertLess(mensaje.index("ALERTAS METEOROLÓGICAS"),
+                        mensaje.index("Explicación de prueba."))
+        self.assertLess(mensaje.index("Explicación de prueba."),
+                        mensaje.index("ESTADÍSTICAS SEMANALES"))
+
+    def test_explicacion_sin_alertas_no_aparece(self):
+        mensaje = generar_mensaje_completo(
+            _datos_completos(), [], [],
+            explicacion_alertas="Explicación de prueba.")
+        self.assertIsNotNone(mensaje)
+        self.assertNotIn("Explicación de prueba.", mensaje)
+        self.assertIn("Sin alertas meteorológicas", mensaje)
 
 
 if __name__ == '__main__':
