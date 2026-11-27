@@ -91,7 +91,8 @@ python -m unittest discover -s tests
 | :--- | :--- | :---: |
 | `TELEGRAM_TOKEN` | El bot de Telegram | ✅ |
 | `TELEGRAM_CHAT_ID` | El canal donde llega el reporte | ✅ |
-| `GEMINI_API_KEY` | La narrativa semanal (Google AI Studio, gratis) | No — sin ella, el reporte sale igual pero sin esa sección |
+| `GEMINI_API_KEY` | Las narrativas (Google AI Studio, gratis) | No — sin ella, el reporte sale igual pero sin esas secciones |
+| `GROQ_API_KEY` | Respaldo de las narrativas si Gemini falla (Groq, gratis, sin tarjeta) | No — sin ella, el respaldo se omite y el reporte sale igual |
 
 </details>
 
@@ -101,7 +102,7 @@ python -m unittest discover -s tests
 
 - Datos del pronóstico: [Open-Meteo](https://open-meteo.com/) — modelos ECMWF (IFS) y GFS, ensembles ECMWF (51 miembros) y GFS (31 miembros).
 - Fotos de los paneles: Openverse (CC) y material generado, con créditos en `assets/fondos/FUENTES.md`.
-- Narrativa semanal: Gemini 2.5 Flash (Google AI Studio).
+- Narrativas: Gemini 3.5 Flash-Lite (Google AI Studio), con respaldo Groq (GPT-OSS 120B).
 
 ---
 
