@@ -6,6 +6,7 @@ red, y si la respuesta no pasa la validación el reporte sigue sin
 la sección semanal.
 """
 
+import inspect
 import os
 import sys
 import unittest
@@ -23,11 +24,14 @@ from src.formato import (
 )
 from src.narrador import (
     MODELO_GEMINI,
+    MODELO_GROQ,
+    URL_GROQ,
     construir_prompt,
     construir_prompt_alertas,
     construir_prompt_dia,
     construir_prompt_navidad,
     llamar_gemini,
+    llamar_groq,
     obtener_explicacion_alertas,
     obtener_interpretacion_navidad,
     obtener_narrativa_dia,
@@ -105,6 +109,17 @@ def _respuesta_gemini(texto):
     mock = MagicMock()
     mock.json.return_value = {
         'candidates': [{'content': {'parts': [{'text': texto}]}}]
+    }
+    mock.raise_for_status.return_value = None
+    return mock
+
+
+def _respuesta_groq(texto):
+    """Respuesta simulada de Groq chat/completions con ese texto."""
+    mock = MagicMock()
+    mock.json.return_value = {
+        'choices': [{'message': {'role': 'assistant',
+                                 'content': texto}}]
     }
     mock.raise_for_status.return_value = None
     return mock
@@ -342,6 +357,25 @@ class TestObtenerNarrativa(unittest.TestCase):
                 headers = mock_post.call_args[1]['headers']
                 self.assertNotIn('x-goog-api-key', headers)
 
+    def test_llave_groq_por_variable_de_entorno(self):
+        # La llave Groq también se toma del entorno si no se pasa:
+        # Gemini 503 dos veces y Groq responde con el texto válido.
+        with patch.dict(os.environ,
+                        {'GROQ_API_KEY': 'llave-groq-falsa'}):
+            with patch('src.narrador.requests.post') as mock_post:
+                mock_post.side_effect = [
+                    _respuesta_error(503, 'high demand'),
+                    _respuesta_error(503, 'high demand'),
+                    _respuesta_groq(TEXTO_BUENO)]
+                with patch('src.narrador.time.sleep'):
+                    self.assertEqual(
+                        obtener_narrativa_semanal(
+                            _daily_ejemplo(), api_key="llave-falsa"),
+                        TEXTO_BUENO)
+                self.assertEqual(mock_post.call_count, 3)
+                self.assertEqual(mock_post.call_args_list[2][0][0],
+                                 URL_GROQ)
+
     def test_error_http_devuelve_none(self):
         mock = MagicMock()
         mock.raise_for_status.side_effect = requests.HTTPError(
@@ -442,52 +476,146 @@ class TestLlamarGemini(unittest.TestCase):
             mock_sleep.assert_called_once_with(10)
 
     def test_error_503_dos_veces_devuelve_none(self):
-        # Principal 2 intentos + respaldo 1 intento, todos 503.
+        # Principal 2 intentos 503 y sin llave Groq: el respaldo se
+        # omite, devuelve None. Solo 2 llamadas, ambas a Gemini.
         with patch('src.narrador.requests.post') as mock_post:
             mock_post.side_effect = [
-                _respuesta_error(503, 'high demand'),
                 _respuesta_error(503, 'high demand'),
                 _respuesta_error(503, 'high demand')]
             with patch('src.narrador.time.sleep'):
                 self.assertIsNone(llamar_gemini("prompt", "k"))
-            self.assertEqual(mock_post.call_count, 3)
+            self.assertEqual(mock_post.call_count, 2)
+            for llamada in mock_post.call_args_list:
+                self.assertIn("generativelanguage", llamada[0][0])
 
     def test_error_404_no_reintenta(self):
-        # 404 es de configuración: sin espera, pero sí se intenta el
-        # modelo de respaldo una vez.
+        # 404 es de configuración: sin espera y sin respaldo si no
+        # hay llave Groq. Solo 1 llamada.
         with patch('src.narrador.requests.post') as mock_post:
             mock_post.side_effect = [
-                _respuesta_error(404, 'not found'),
                 _respuesta_error(404, 'not found')]
             with patch('src.narrador.time.sleep') as mock_sleep:
                 self.assertIsNone(llamar_gemini("prompt", "k"))
-            self.assertEqual(mock_post.call_count, 2)
+            self.assertEqual(mock_post.call_count, 1)
             mock_sleep.assert_not_called()
 
-    def test_respaldo_responde_si_principal_saturado(self):
-        # El principal da 503 dos veces; el respaldo responde.
+    def test_respaldo_groq_responde_si_principal_saturado(self):
+        # El principal (lite) da 503 dos veces; Groq responde.
         with patch('src.narrador.requests.post') as mock_post:
             mock_post.side_effect = [
                 _respuesta_error(503, 'high demand'),
                 _respuesta_error(503, 'high demand'),
-                _respuesta_gemini("Hola.")]
+                _respuesta_groq("Hola desde Groq.")]
             with patch('src.narrador.time.sleep'):
                 self.assertEqual(
-                    llamar_gemini("prompt", "k"), "Hola.")
+                    llamar_gemini("prompt", "k",
+                                  groq_api_key="llave-groq-falsa"),
+                    "Hola desde Groq.")
             self.assertEqual(mock_post.call_count, 3)
-            url_respaldo = mock_post.call_args[0][0]
-            self.assertIn("gemini-3.5-flash-lite", url_respaldo)
+            llamada_groq = mock_post.call_args_list[2]
+            self.assertEqual(llamada_groq[0][0], URL_GROQ)
+            self.assertEqual(llamada_groq[1]['json']['model'],
+                             MODELO_GROQ)
+            self.assertEqual(
+                llamada_groq[1]['json']['messages'],
+                [{"role": "user", "content": "prompt"}])
+            # La llave viaja como Bearer sin imprimirse en el test.
+            auth = llamada_groq[1]['headers'].get('Authorization', '')
+            self.assertTrue(auth.startswith("Bearer "))
+            self.assertGreater(len(auth), len("Bearer "))
 
-    def test_respaldo_responde_si_principal_da_404(self):
-        # El principal no existe para la llave; el respaldo responde.
+    def test_respaldo_groq_responde_si_principal_da_404(self):
+        # El principal no existe para la llave; Groq responde.
         with patch('src.narrador.requests.post') as mock_post:
             mock_post.side_effect = [
                 _respuesta_error(404, 'not found'),
-                _respuesta_gemini("Hola.")]
+                _respuesta_groq("Hola desde Groq.")]
             with patch('src.narrador.time.sleep'):
                 self.assertEqual(
-                    llamar_gemini("prompt", "k"), "Hola.")
+                    llamar_gemini("prompt", "k",
+                                  groq_api_key="llave-groq-falsa"),
+                    "Hola desde Groq.")
             self.assertEqual(mock_post.call_count, 2)
+
+    def test_respaldo_groq_tambien_falla_devuelve_none(self):
+        # Principal 503 dos veces y Groq también falla (429): None.
+        with patch('src.narrador.requests.post') as mock_post:
+            mock_post.side_effect = [
+                _respuesta_error(503, 'high demand'),
+                _respuesta_error(503, 'high demand'),
+                _respuesta_error(429, 'rate limit')]
+            with patch('src.narrador.time.sleep'):
+                self.assertIsNone(
+                    llamar_gemini("prompt", "k",
+                                  groq_api_key="llave-groq-falsa"))
+            self.assertEqual(mock_post.call_count, 3)
+
+    def test_sin_llave_groq_no_hay_llamada_a_groq(self):
+        # Sin llave Groq, el respaldo se omite: solo los 2 intentos
+        # de Gemini, ninguna llamada a la URL de Groq.
+        with patch('src.narrador.requests.post') as mock_post:
+            mock_post.side_effect = [
+                _respuesta_error(503, 'high demand'),
+                _respuesta_error(503, 'high demand')]
+            with patch('src.narrador.time.sleep'):
+                self.assertIsNone(llamar_gemini("prompt", "k"))
+            self.assertEqual(mock_post.call_count, 2)
+            for llamada in mock_post.call_args_list:
+                self.assertNotIn("groq", llamada[0][0])
+
+
+class TestLlamarGroq(unittest.TestCase):
+    """El respaldo Groq: un intento, formato OpenAI, nunca excepciones."""
+
+    def test_exito_devuelve_texto(self):
+        with patch('src.narrador.requests.post') as mock_post:
+            mock_post.return_value = _respuesta_groq("Hola.")
+            self.assertEqual(llamar_groq("prompt", "llave-falsa"),
+                             "Hola.")
+            mock_post.assert_called_once()
+            llamada = mock_post.call_args
+            self.assertEqual(llamada[0][0], URL_GROQ)
+            self.assertEqual(llamada[1]['json']['model'], MODELO_GROQ)
+            self.assertEqual(llamada[1]['json']['temperature'], 0.5)
+            self.assertEqual(llamada[1]['json']['max_tokens'], 1024)
+            self.assertEqual(
+                llamada[1]['json']['messages'],
+                [{"role": "user", "content": "prompt"}])
+            auth = llamada[1]['headers'].get('Authorization', '')
+            self.assertTrue(auth.startswith("Bearer "))
+
+    def test_sin_llave_no_hay_llamada_de_red(self):
+        with patch('src.narrador.requests.post') as mock_post:
+            self.assertIsNone(llamar_groq("prompt", None))
+            self.assertIsNone(llamar_groq("prompt", "   "))
+            mock_post.assert_not_called()
+
+    def test_error_http_devuelve_none(self):
+        with patch('src.narrador.requests.post',
+                   return_value=_respuesta_error(429, 'rate limit')):
+            self.assertIsNone(llamar_groq("prompt", "k"))
+
+    def test_respuesta_sin_choices_devuelve_none(self):
+        mock = MagicMock()
+        mock.json.return_value = {'choices': []}
+        mock.raise_for_status.return_value = None
+        with patch('src.narrador.requests.post', return_value=mock):
+            self.assertIsNone(llamar_groq("prompt", "k"))
+
+    def test_respuesta_sin_contenido_devuelve_none(self):
+        mock = MagicMock()
+        mock.json.return_value = {
+            'choices': [{'message': {'role': 'assistant',
+                                     'content': '   '}}]
+        }
+        mock.raise_for_status.return_value = None
+        with patch('src.narrador.requests.post', return_value=mock):
+            self.assertIsNone(llamar_groq("prompt", "k"))
+
+    def test_timeout_devuelve_none(self):
+        with patch('src.narrador.requests.post',
+                   side_effect=requests.Timeout):
+            self.assertIsNone(llamar_groq("prompt", "k"))
 
 
 class TestConstruirPromptDia(unittest.TestCase):
@@ -790,16 +918,17 @@ class TestGenerarCaptionNavidad(unittest.TestCase):
 class TestIntegracionMensajeGemini(unittest.TestCase):
     """Las 3 narrativas nuevas aparecen solo donde les toca."""
 
-    def test_narrativa_dia_va_despues_de_la_fecha(self):
-        mensaje = generar_mensaje_completo(
-            _datos_completos(), [], [],
-            narrativa_dia="Párrafo de prueba del día.")
+    def test_narrativa_dia_no_va_en_el_mensaje(self):
+        # La narrativa del día vive solo en el caption de la tarjeta:
+        # en el texto ejecutivo ya no aparece (antes se repetía y al
+        # resumen ejecutivo no le aportaba nada).
+        mensaje = generar_mensaje_completo(_datos_completos(), [], [])
         self.assertIsNotNone(mensaje)
-        self.assertIn("Párrafo de prueba del día.", mensaje)
-        self.assertLess(mensaje.index("MONITOREO PROTECCIÓN CIVIL"),
-                        mensaje.index("Párrafo de prueba del día."))
-        self.assertLess(mensaje.index("Párrafo de prueba del día."),
-                        mensaje.index("RESUMEN EJECUTIVO"))
+        self.assertNotIn("Párrafo de prueba del día.", mensaje)
+        # generar_mensaje_completo ya no acepta el parámetro.
+        self.assertNotIn(
+            "narrativa_dia",
+            inspect.signature(generar_mensaje_completo).parameters)
 
     def test_sin_narrativa_dia_no_aparece_nada_extra(self):
         mensaje = generar_mensaje_completo(_datos_completos(), [], [])
