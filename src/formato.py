@@ -106,8 +106,13 @@ def generar_resumen_ejecutivo(current, daily):
             resumen += "💧 Hidrátate bien."
         elif temp_min < 12:
             resumen += "🧣 Abrígate en la mañana."
-        
-        return resumen + "\n"
+
+        # Lluvia esperada hoy en mm: el dato que faltaba en el
+        # ejecutivo (el total del día, no solo la probabilidad).
+        mm_hoy = round(float(lluvia or 0), 1)
+        resumen += f" 💧 Lluvia esperada hoy: {mm_hoy:g} mm."
+
+        return " ".join(resumen.split()) + "\n"
         
     except Exception as e:
         logger.error(f"Error generando resumen: {e}")
