@@ -41,8 +41,10 @@ from src.grafica_navidad import (
     rango_navidad,
     temporada_navidad,
 )
+from src.narrador import obtener_narrativa_semanal
 from src.tarjeta import generar_tarjeta_diaria
 from src.telegram_bot import validar_configuracion_telegram
+from src.utils import DIAS_ESP
 
 
 def _datos_ejemplo():
@@ -129,6 +131,20 @@ def main():
     else:
         print("  ⚠️  Sin ensemble: la tarjeta usará la heurística de siempre")
 
+    print("PASO 2c: Narrador semanal SIN llave (no debe haber red ni crash)...")
+    os.environ.pop('GEMINI_API_KEY', None)  # la prueba es sin llave
+    try:
+        narrativa_sin_llave = obtener_narrativa_semanal(
+            datos['daily'], ensemble=ensemble, api_key=None)
+    except Exception as e:
+        errores.append(f"el narrador sin llave lanzó excepción: {e}")
+        narrativa_sin_llave = "ERROR"
+        print(f"  ❌ FALLÓ (lanzó excepción: {e})")
+    if narrativa_sin_llave is None:
+        print("  ✅ Devuelve None rápido, sin red ni crash")
+    elif narrativa_sin_llave != "ERROR":
+        print("  ⚠️  Había llave en el entorno y devolvió texto (no es error)")
+
     print("PASO 3: Analizando riesgos...")
     alertas = analizar_riesgos_climaticos(datos['daily'])
     eventos = detectar_eventos_especiales(datos['hourly'])
@@ -144,6 +160,47 @@ def main():
     else:
         errores.append("no se pudo generar el reporte")
         print("  ❌ FALLÓ")
+
+    print("PASO 4d: Reporte de muestra con la sección semanal...")
+    # Ejemplo (NO es salida de Gemini: solo muestra dónde queda la
+    # sección). Las 3 líneas se derivan de los datos reales del día.
+    try:
+        daily = datos['daily']
+        fechas = daily['time']
+
+        def _dia(i):
+            fecha = datetime.strptime(fechas[i], "%Y-%m-%d")
+            return f"{DIAS_ESP.get(fecha.strftime('%A'), 'Día')} {fecha.strftime('%d/%m')}"
+
+        i_lluvia = max(range(len(fechas)),
+                       key=lambda i: daily['precipitation_sum'][i])
+        i_frio = min(range(len(fechas)),
+                     key=lambda i: daily['temperature_2m_min'][i])
+        i_calor = max(range(len(fechas)),
+                      key=lambda i: daily['temperature_2m_max'][i])
+        ejemplo_semana = (
+            f"El {_dia(i_lluvia)} será el día más lluvioso de la semana, "
+            f"con {round(daily['precipitation_sum'][i_lluvia], 1)} mm y "
+            f"{round(daily['precipitation_probability_max'][i_lluvia])}% "
+            f"de probabilidad.\n"
+            f"El día más frío será el {_dia(i_frio)}, con mínima de "
+            f"{round(daily['temperature_2m_min'][i_frio])} °C.\n"
+            f"La máxima más alta llegará el {_dia(i_calor)}, con "
+            f"{round(daily['temperature_2m_max'][i_calor])} °C.")
+        mensaje_semana = generar_mensaje_completo(
+            datos, alertas, eventos, ensemble=ensemble,
+            semana_narrativa=ejemplo_semana)
+        if mensaje_semana and "LA SEMANA EN TEMPOAL" in mensaje_semana:
+            with open('reporte_muestra_semana.txt', 'w',
+                      encoding='utf-8') as f:
+                f.write(mensaje_semana)
+            print("  ✅ Muestra guardada en reporte_muestra_semana.txt")
+        else:
+            errores.append("la muestra semanal no trae la sección")
+            print("  ❌ FALLÓ")
+    except Exception as e:
+        errores.append(f"no se pudo generar la muestra semanal: {e}")
+        print(f"  ❌ FALLÓ ({e})")
 
     print("PASO 4b: Generando tarjeta...")
     ruta_logo = os.path.join(os.path.dirname(__file__), '..', 'logo.png')
