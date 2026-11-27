@@ -173,7 +173,7 @@ def generar_estadisticas_semana(daily):
 
 def generar_mensaje_completo(data, alertas, eventos_especiales,
                             ensemble=None, semana_narrativa=None,
-                            narrativa_dia=None, explicacion_alertas=None):
+                            explicacion_alertas=None):
     """
     Genera el mensaje completo formateado para Telegram.
 
@@ -199,10 +199,11 @@ def generar_mensaje_completo(data, alertas, eventos_especiales,
     agrega la sección "LA SEMANA EN TEMPOAL" justo después de
     "PRÓXIMOS 3 DÍAS". Sin ella, la sección no aparece.
 
-    Con `narrativa_dia` (texto del narrador Gemini, opcional), el
-    párrafo va justo después de la fecha y antes del "RESUMEN
-    EJECUTIVO", como introducción del reporte. Con
-    `explicacion_alertas` (texto del narrador Gemini, opcional), la
+    La narrativa del día ya NO va en este texto: vive solo en el
+    caption de la tarjeta (mezclada con las viñetas), porque aquí
+    se repetía y al resumen ejecutivo no le aportaba nada.
+
+    Con `explicacion_alertas` (texto del narrador Gemini, opcional), la
     explicación va dentro de la sección de alertas, justo después de
     las líneas de alerta (solo cuando hay alertas). Sin ellos, el
     mensaje queda exactamente como antes.
@@ -238,11 +239,6 @@ def generar_mensaje_completo(data, alertas, eventos_especiales,
         # Construir mensaje
         msg = "🚨 <b>MONITOREO PROTECCIÓN CIVIL TEMPOAL</b> 🚨\n"
         msg += f"📅 <i>{formatear_fecha_completa()}</i>\n\n"
-
-        # Narrativa del día con Gemini: introducción del reporte (si el
-        # narrador devolvió texto validado; si no, no aparece nada)
-        if narrativa_dia and str(narrativa_dia).strip():
-            msg += f"{str(narrativa_dia).strip()}\n\n"
 
         # Resumen ejecutivo (de siempre)
         msg += generar_resumen_ejecutivo(
