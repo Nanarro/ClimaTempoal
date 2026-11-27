@@ -163,7 +163,11 @@ def main():
             ruta_logo=ruta_logo if os.path.exists(ruta_logo) else None,
             ensemble=ensemble)
         if ruta_tarjeta:
-            caption_tarjeta = generar_caption_tarjeta(datos, ensemble=ensemble)
+            # La narrativa diaria también va en el texto de la
+            # tarjeta (mezclada con las viñetas); si Gemini falló,
+            # el caption queda solo con las viñetas, como siempre.
+            caption_tarjeta = generar_caption_tarjeta(
+                datos, ensemble=ensemble, narrativa_dia=narrativa_dia)
         else:
             logger.warning("⚠️  No se pudo generar la tarjeta, se enviará solo texto")
     except Exception as e:
