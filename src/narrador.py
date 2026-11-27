@@ -30,6 +30,10 @@ from .utils import logger, DIAS_ESP, obtener_hora_mexico
 # quienes ya los usaban: con una llave nueva devuelve HTTP 404, así
 # que se usa el modelo vigente recomendado por Google (3.8 Flash).
 MODELO_GEMINI = "gemini-3.8-flash"
+# Respaldo: si el modelo principal está saturado (503) o no responde,
+# se intenta una vez con el modelo ligero, que suele responder más
+# rápido (es el otro modelo que recomienda Google para llaves nuevas).
+MODELO_GEMINI_RESPALDO = "gemini-3.5-flash-lite"
 URL_GEMINI = ("https://generativelanguage.googleapis.com/v1beta/models/"
               "{modelo}:generateContent")
 
@@ -261,79 +265,100 @@ def llamar_gemini(prompt, api_key, modelo=MODELO_GEMINI,
     Una llamada a Gemini (best-effort, nunca lanza excepciones).
 
     Devuelve el texto crudo de la respuesta o None. Sin llave no hay
-    llamada de red. Máximo 2 intentos (timeout 20 s): reintenta el
-    timeout, el error de red y los errores HTTP transitorios (429 y
-    5xx, con 10 s de espera, porque Google mismo pide reintentarlos);
-    los demás errores HTTP (400/401/403/404) son terminales. La llave
-    viaja como parámetro ?key= en la URL (el patrón REST documentado
-    de Google; las llaves nuevas con prefijo "AQ." dan 404 si van en
-    el header x-goog-api-key) y nunca se registra en el log: la URL
-    no se registra.
+    llamada de red. Primero se intenta el modelo dado (2 intentos);
+    si no responde, se intenta una vez con el modelo de respaldo
+    (gemini-3.5-flash-lite). Por intento, el tiempo límite es 20 s.
+    La llave viaja como parámetro ?key= en la URL (el patrón REST
+    documentado de Google; las llaves nuevas con prefijo "AQ." dan
+    404 si van en el header x-goog-api-key) y nunca se registra en
+    el log: la URL no se registra.
     """
     try:
         llave = (api_key or "").strip()
         if not llave:
             return None
-        url = URL_GEMINI.format(modelo=modelo) + "?key=" + llave
-        headers = {"Content-Type": "application/json"}
-        cuerpo = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"temperature": 0.3,
-                                 "maxOutputTokens": 300},
-        }
-        for intento in range(1, 3):
-            try:
-                logger.info(f"🤖 {etiqueta}: pidiendo a Gemini "
-                            f"(intento {intento}/2)...")
-                respuesta = requests.post(url, headers=headers, json=cuerpo,
-                                          timeout=20)
-                respuesta.raise_for_status()
-                texto = _extraer_texto_gemini(respuesta.json())
-                if not texto:
-                    logger.warning(f"🤖 {etiqueta}: Gemini respondió "
-                                   "sin texto")
-                    return None
-                return texto.strip()
-            except requests.Timeout:
-                logger.warning(f"🤖 {etiqueta}: timeout en intento "
-                               f"{intento}/2")
-            except requests.HTTPError as e:
-                codigo = (e.response.status_code
-                          if e.response is not None else "?")
-                # El cuerpo del error dice el porqué (p. ej. el modelo
-                # no existe para esta llave); se registra recortado
-                # para que el próximo fallo se diagnostique solo.
-                # El cuerpo nunca contiene la llave.
-                mensaje = ""
-                try:
-                    mensaje = (e.response.json()
-                               .get("error", {}).get("message", ""))
-                except Exception:
-                    mensaje = ""
-                # 429 y 5xx son transitorios (Google mismo pide
-                # reintentarlos): se reintenta una vez tras 10 s.
-                # 400/401/403/404 son de configuración: no se reintenta.
-                if codigo in (429, 500, 502, 503, 504) and intento < 2:
-                    logger.warning(f"🤖 {etiqueta}: error HTTP "
-                                   f"{codigo} ({mensaje[:200]}), "
-                                   f"reintentando...")
-                    time.sleep(10)
-                    continue
-                logger.warning(f"🤖 {etiqueta}: error HTTP "
-                               f"{codigo} ({mensaje[:200]}), se omite")
-                return None
-            except requests.RequestException as e:
-                logger.warning(f"🤖 {etiqueta}: error de red ({e})")
-            except Exception as e:
-                logger.warning(f"🤖 {etiqueta}: error inesperado ({e})")
-                return None
-            if intento < 2:
-                time.sleep(2)
-        logger.warning(f"🤖 {etiqueta}: sin respuesta tras 2 intentos")
+        for modelo_actual, intentos in ((modelo, 2),
+                                        (MODELO_GEMINI_RESPALDO, 1)):
+            texto = _llamar_modelo(prompt, llave, modelo_actual,
+                                   etiqueta, intentos)
+            if texto:
+                if modelo_actual != modelo:
+                    logger.info(f"🤖 {etiqueta}: respondió con "
+                                f"{modelo_actual} (respaldo)")
+                return texto
         return None
     except Exception as e:
         logger.warning(f"🤖 {etiqueta}: error inesperado ({e})")
         return None
+
+
+def _llamar_modelo(prompt, llave, modelo, etiqueta, intentos):
+    """
+    Intenta una llamada a un modelo concreto (best-effort).
+
+    Reintenta el timeout, el error de red y los errores HTTP
+    transitorios (429 y 5xx, con 10 s de espera, porque Google mismo
+    pide reintentarlos); los demás errores HTTP (400/401/403/404) son
+    terminales. Devuelve el texto o None. Nunca registra la llave.
+    """
+    url = URL_GEMINI.format(modelo=modelo) + "?key=" + llave
+    headers = {"Content-Type": "application/json"}
+    cuerpo = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.3,
+                             "maxOutputTokens": 300},
+    }
+    for intento in range(1, intentos + 1):
+        try:
+            logger.info(f"🤖 {etiqueta}: pidiendo a Gemini "
+                        f"({modelo}, intento {intento}/{intentos})...")
+            respuesta = requests.post(url, headers=headers, json=cuerpo,
+                                      timeout=20)
+            respuesta.raise_for_status()
+            texto = _extraer_texto_gemini(respuesta.json())
+            if not texto:
+                logger.warning(f"🤖 {etiqueta}: Gemini respondió "
+                               "sin texto")
+                return None
+            return texto.strip()
+        except requests.Timeout:
+            logger.warning(f"🤖 {etiqueta}: timeout en intento "
+                           f"{intento}/{intentos} ({modelo})")
+        except requests.HTTPError as e:
+            codigo = (e.response.status_code
+                      if e.response is not None else "?")
+            # El cuerpo del error dice el porqué (p. ej. el modelo
+            # no existe para esta llave); se registra recortado
+            # para que el próximo fallo se diagnostique solo.
+            # El cuerpo nunca contiene la llave.
+            mensaje = ""
+            try:
+                mensaje = (e.response.json()
+                           .get("error", {}).get("message", ""))
+            except Exception:
+                mensaje = ""
+            # 429 y 5xx son transitorios (Google mismo pide
+            # reintentarlos): se reintenta una vez tras 10 s.
+            # 400/401/403/404 son de configuración: no se reintenta.
+            if codigo in (429, 500, 502, 503, 504) and intento < intentos:
+                logger.warning(f"🤖 {etiqueta}: error HTTP "
+                               f"{codigo} ({mensaje[:200]}), "
+                               f"reintentando...")
+                time.sleep(10)
+                continue
+            logger.warning(f"🤖 {etiqueta}: error HTTP "
+                           f"{codigo} ({mensaje[:200]}), se omite")
+            return None
+        except requests.RequestException as e:
+            logger.warning(f"🤖 {etiqueta}: error de red ({e})")
+        except Exception as e:
+            logger.warning(f"🤖 {etiqueta}: error inesperado ({e})")
+            return None
+        if intento < intentos:
+            time.sleep(2)
+    logger.warning(f"🤖 {etiqueta}: sin respuesta tras {intentos} "
+                   f"intentos ({modelo})")
+    return None
 
 
 def obtener_narrativa_semanal(daily, ensemble=None, api_key=None,
