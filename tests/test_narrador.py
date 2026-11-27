@@ -277,8 +277,11 @@ class TestObtenerNarrativa(unittest.TestCase):
         url_llamada = mock_post.call_args[0][0]
         self.assertIn(MODELO_GEMINI, url_llamada)
         self.assertIn("generateContent", url_llamada)
-        # La llave va en header, nunca en la URL ni en el cuerpo
-        self.assertNotIn("llave-falsa", url_llamada)
+        # La llave viaja como ?key= en la URL (patrón REST de Google)
+        self.assertIn("key=llave-falsa", url_llamada)
+        # ...y nunca en el header ni en el cuerpo
+        self.assertNotIn("llave-falsa",
+                         str(mock_post.call_args[1].get('headers', '')))
         self.assertNotIn("llave-falsa",
                          str(mock_post.call_args[1].get('json', '')))
 
@@ -318,8 +321,10 @@ class TestObtenerNarrativa(unittest.TestCase):
                 self.assertEqual(
                     obtener_narrativa_semanal(_daily_ejemplo()),
                     TEXTO_BUENO)
+                url_llamada = mock_post.call_args[0][0]
+                self.assertIn("key=llave-env", url_llamada)
                 headers = mock_post.call_args[1]['headers']
-                self.assertEqual(headers['x-goog-api-key'], 'llave-env')
+                self.assertNotIn('x-goog-api-key', headers)
 
     def test_error_http_devuelve_none(self):
         mock = MagicMock()
@@ -328,6 +333,22 @@ class TestObtenerNarrativa(unittest.TestCase):
         with patch('src.narrador.requests.post', return_value=mock):
             self.assertIsNone(obtener_narrativa_semanal(
                 _daily_ejemplo(), api_key="llave-falsa"))
+
+    def test_error_http_registra_el_mensaje_del_cuerpo(self):
+        # Un 404 con el mensaje de Google queda en el log, para que el
+        # próximo fallo se diagnostique solo (p. ej. modelo no válido).
+        mock = MagicMock()
+        mock.json.return_value = {
+            'error': {'message': 'models/gemini-2.5-flash is not found'}}
+        mock.raise_for_status.side_effect = requests.HTTPError(
+            response=mock)
+        mock.status_code = 404
+        with patch('src.narrador.requests.post', return_value=mock):
+            with self.assertLogs('src.utils', level='WARNING') as logs:
+                self.assertIsNone(obtener_narrativa_semanal(
+                    _daily_ejemplo(), api_key="llave-falsa"))
+        self.assertTrue(any('is not found' in linea
+                            for linea in logs.output))
 
     def test_con_ensemble_crudo_incluye_resumen_en_prompt(self):
         # Ensemble sintético de 5 miembros: llueve en los 3 bloques
