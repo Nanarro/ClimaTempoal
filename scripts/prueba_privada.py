@@ -390,8 +390,19 @@ def main():
         ruta_logo=ruta_logo if os.path.exists(ruta_logo) else None,
         ensemble=ensemble)
     if ruta_tarjeta:
-        caption = generar_caption_tarjeta(datos, ensemble=ensemble)
+        # La narrativa diaria también va en el texto de la tarjeta
+        # (mezclada con las viñetas); ejemplo_dia es el párrafo de
+        # ejemplo del PASO 4e, derivado de los datos reales del día.
+        narrativa_muestra = locals().get('ejemplo_dia')
+        caption = generar_caption_tarjeta(
+            datos, ensemble=ensemble, narrativa_dia=narrativa_muestra)
         print(f"  ✅ Tarjeta generada, caption {len(caption)} caracteres")
+        if narrativa_muestra:
+            if narrativa_muestra.splitlines()[0][:40] in caption:
+                print("  ✅ Caption mezcla narrativa + viñetas")
+            else:
+                errores.append("el caption no trae la narrativa")
+                print("  ❌ FALLÓ")
     else:
         errores.append("no se pudo generar la tarjeta")
         print("  ❌ FALLÓ")
