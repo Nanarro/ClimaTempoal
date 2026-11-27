@@ -14,12 +14,18 @@ del pipeline. Genera dos archivos para revisar:
     - tarjeta_prueba.png  (la tarjeta tal como se enviaría)
     - reporte_prueba.txt  (el texto tal como se enviaría)
 
+Y dos muestras con las secciones de Gemini (ejemplos derivados de
+los datos reales, NO salida de Gemini):
+    - reporte_muestra_semana.txt  (la sección semanal)
+    - reporte_muestra_gemini.txt  (día + semana + alertas)
+
 No toca secretos ni envía mensajes: es 100% privado.
 """
 
 import os
+import re
 import sys
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 # Raíz del repo en el path (el script vive en scripts/)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -41,7 +47,12 @@ from src.grafica_navidad import (
     rango_navidad,
     temporada_navidad,
 )
-from src.narrador import obtener_narrativa_semanal
+from src.narrador import (
+    obtener_explicacion_alertas,
+    obtener_interpretacion_navidad,
+    obtener_narrativa_dia,
+    obtener_narrativa_semanal,
+)
 from src.tarjeta import generar_tarjeta_diaria
 from src.telegram_bot import validar_configuracion_telegram
 from src.utils import DIAS_ESP
@@ -102,6 +113,140 @@ def _datos_ejemplo():
     }
 
 
+def _ejemplo_semana(datos):
+    """Ejemplo de narrativa semanal derivado de los datos reales."""
+    daily = datos['daily']
+    fechas = daily['time']
+
+    def _dia(i):
+        fecha = datetime.strptime(fechas[i], "%Y-%m-%d")
+        return f"{DIAS_ESP.get(fecha.strftime('%A'), 'Día')} {fecha.strftime('%d/%m')}"
+
+    i_lluvia = max(range(len(fechas)),
+                   key=lambda i: daily['precipitation_sum'][i])
+    i_frio = min(range(len(fechas)),
+                 key=lambda i: daily['temperature_2m_min'][i])
+    i_calor = max(range(len(fechas)),
+                  key=lambda i: daily['temperature_2m_max'][i])
+    return (
+        f"El {_dia(i_lluvia)} será el día más lluvioso de la semana, "
+        f"con {round(daily['precipitation_sum'][i_lluvia], 1)} mm y "
+        f"{round(daily['precipitation_probability_max'][i_lluvia])}% "
+        f"de probabilidad.\n"
+        f"El día más frío será el {_dia(i_frio)}, con mínima de "
+        f"{round(daily['temperature_2m_min'][i_frio])} °C.\n"
+        f"La máxima más alta llegará el {_dia(i_calor)}, con "
+        f"{round(daily['temperature_2m_max'][i_calor])} °C.")
+
+
+def _ejemplo_dia(datos, ensemble=None):
+    """Ejemplo de narrativa del día derivado de los datos reales."""
+    from src.formato import obtener_bloques_diarios
+    daily = datos['daily']
+    hourly = datos.get('hourly') or {}
+    lineas = []
+    try:
+        bloques = obtener_bloques_diarios(datos, ensemble=ensemble)
+    except Exception:
+        bloques = []
+    if bloques:
+        mas_lluvia = max(bloques, key=lambda b: b.get('prob_max') or 0)
+        menos_lluvia = min(bloques, key=lambda b: b.get('prob_max') or 0)
+        nombre = (mas_lluvia.get('nombre') or '').lower()
+        prob = round(mas_lluvia.get('prob_max') or 0)
+        linea = (f"La lluvia más fuerte será {nombre}, con {prob}% de "
+                 "probabilidad")
+        if ((mas_lluvia.get('prob_max') or 0)
+                - (menos_lluvia.get('prob_max') or 0) >= 30):
+            linea += (" y se irá calmando hacia "
+                      f"{(menos_lluvia.get('nombre') or '').lower()}")
+        lineas.append(linea + ".")
+    mins = [v for v in (daily.get('temperature_2m_min') or [])
+            if v is not None]
+    maxs = [v for v in (daily.get('temperature_2m_max') or [])
+            if v is not None]
+    if mins and maxs:
+        lineas.append(f"La temperatura irá de {round(min(mins))} °C a "
+                      f"{round(max(maxs))} °C.")
+    presiones = [p for p in (hourly.get('surface_pressure') or [])
+                 if p is not None]
+    if len(presiones) >= 2:
+        delta = round(presiones[-1] - presiones[0], 1)
+        if delta <= -3:
+            lineas.append("La presión viene bajando: la lluvia se mantendrá.")
+        elif delta >= 3:
+            lineas.append(
+                "La presión viene subiendo: el tiempo tiende a mejorar.")
+        else:
+            lineas.append("La presión se mantiene estable.")
+    return "\n".join(lineas)
+
+
+def _alertas_ejemplo_muestra():
+    """Una alerta de ejemplo (solo para la muestra, no es real)."""
+    return ["🌧️ <b>HOY: LLUVIA INTENSA</b>\n"
+            "   💧 Acumulado: 22 mm\n"
+            "   ☂️ No olvides paraguas"]
+
+
+def _ejemplo_explicacion(alertas):
+    """Ejemplo de explicación derivado de las alertas reales."""
+    lineas = []
+    for alerta in (alertas or []):
+        texto = " ".join(str(alerta).split())
+        if "LLUVIA" in texto:
+            mm = re.search(r"Acumulado(?: esperado)?: (\d+) mm", texto)
+            cantidad = f" de {mm.group(1)} mm" if mm else ""
+            lineas.append(
+                f"Lluvia intensa{cantidad}: lloverá mucho en poco "
+                "tiempo, puede haber encharcamientos; evita cruzar "
+                "arroyos y maneja con cuidado.")
+        elif "FRENTE FRÍO" in texto:
+            viento = re.search(r"Vientos: (\d+) km/h", texto)
+            temp = re.search(r"Temperatura esperada: (\d+)°C", texto)
+            linea = "Frente frío con viento norte"
+            if viento:
+                linea += f" de {viento.group(1)} km/h"
+            if temp:
+                linea += f" y {temp.group(1)} °C"
+            lineas.append(linea + ": abrigarse bien y asegurar "
+                          "objetos sueltos.")
+        elif "CALOR" in texto:
+            maxima = re.search(r"Máxima: (\d+)°C", texto)
+            cantidad = f" de {maxima.group(1)} °C" if maxima else ""
+            lineas.append(
+                f"Calor extremo{cantidad}: hidratarse y evitar el sol "
+                "de 11:00 a 16:00.")
+        elif "VIENTOS" in texto:
+            rafaga = re.search(r"Ráfagas: (\d+) km/h", texto)
+            cantidad = f" de {rafaga.group(1)} km/h" if rafaga else ""
+            lineas.append(
+                f"Vientos muy fuertes con ráfagas{cantidad}: asegurar "
+                "objetos sueltos y evitar estar bajo árboles.")
+        elif "HELADA" in texto:
+            minima = re.search(r"Mínima: ([\d.]+)", texto)
+            cantidad = f" de {minima.group(1)} °C" if minima else ""
+            lineas.append(
+                f"Riesgo de helada con mínima{cantidad}: proteger "
+                "plantas y mascotas.")
+        elif "UV" in texto:
+            uv = re.search(r"Índice UV: (\d+)", texto)
+            cantidad = f" (índice {uv.group(1)})" if uv else ""
+            lineas.append(
+                f"Radiación UV extrema{cantidad}: usar protector solar, "
+                "lentes y sombrero.")
+        elif "BAJÓN" in texto:
+            caida = re.search(r"Descenso: ([\d.]+)°C", texto)
+            cantidad = f" de {caida.group(1)} °C" if caida else ""
+            lineas.append(
+                f"Bajón térmico{cantidad}: preparar ropa abrigadora.")
+        else:
+            limpio = re.sub(r"<[^>]*>", "", texto)
+            lineas.append("Alerta vigente: "
+                          + " ".join(limpio.split()) + ".")
+    return "\n".join(lineas)
+
+
 def main():
     errores = []
 
@@ -145,6 +290,26 @@ def main():
     elif narrativa_sin_llave != "ERROR":
         print("  ⚠️  Había llave en el entorno y devolvió texto (no es error)")
 
+    print("PASO 2c2: Narrativas nuevas SIN llave (sin red ni crash)...")
+    try:
+        probs_prueba = [{'fecha': date.today(), 'sin_datos': False,
+                         'prob_frio': 10, 'prob_muy_frio': 2,
+                         'n_miembros': 30}]
+        sin_llave = [
+            obtener_narrativa_dia(datos, ensemble=ensemble, api_key=None),
+            obtener_interpretacion_navidad(probs_prueba, api_key=None),
+            obtener_explicacion_alertas(_alertas_ejemplo_muestra(),
+                                        api_key=None),
+        ]
+    except Exception as e:
+        errores.append(f"las narrativas sin llave lanzaron excepción: {e}")
+        sin_llave = ["ERROR"]
+        print(f"  ❌ FALLÓ (lanzó excepción: {e})")
+    if sin_llave == [None, None, None]:
+        print("  ✅ Las 3 devuelven None rápido, sin red ni crash")
+    elif "ERROR" not in sin_llave:
+        print("  ⚠️  Había llave en el entorno y alguna devolvió texto (no es error)")
+
     print("PASO 3: Analizando riesgos...")
     alertas = analizar_riesgos_climaticos(datos['daily'])
     eventos = detectar_eventos_especiales(datos['hourly'])
@@ -165,28 +330,7 @@ def main():
     # Ejemplo (NO es salida de Gemini: solo muestra dónde queda la
     # sección). Las 3 líneas se derivan de los datos reales del día.
     try:
-        daily = datos['daily']
-        fechas = daily['time']
-
-        def _dia(i):
-            fecha = datetime.strptime(fechas[i], "%Y-%m-%d")
-            return f"{DIAS_ESP.get(fecha.strftime('%A'), 'Día')} {fecha.strftime('%d/%m')}"
-
-        i_lluvia = max(range(len(fechas)),
-                       key=lambda i: daily['precipitation_sum'][i])
-        i_frio = min(range(len(fechas)),
-                     key=lambda i: daily['temperature_2m_min'][i])
-        i_calor = max(range(len(fechas)),
-                      key=lambda i: daily['temperature_2m_max'][i])
-        ejemplo_semana = (
-            f"El {_dia(i_lluvia)} será el día más lluvioso de la semana, "
-            f"con {round(daily['precipitation_sum'][i_lluvia], 1)} mm y "
-            f"{round(daily['precipitation_probability_max'][i_lluvia])}% "
-            f"de probabilidad.\n"
-            f"El día más frío será el {_dia(i_frio)}, con mínima de "
-            f"{round(daily['temperature_2m_min'][i_frio])} °C.\n"
-            f"La máxima más alta llegará el {_dia(i_calor)}, con "
-            f"{round(daily['temperature_2m_max'][i_calor])} °C.")
+        ejemplo_semana = _ejemplo_semana(datos)
         mensaje_semana = generar_mensaje_completo(
             datos, alertas, eventos, ensemble=ensemble,
             semana_narrativa=ejemplo_semana)
@@ -200,6 +344,43 @@ def main():
             print("  ❌ FALLÓ")
     except Exception as e:
         errores.append(f"no se pudo generar la muestra semanal: {e}")
+        print(f"  ❌ FALLÓ ({e})")
+
+    print("PASO 4e: Reporte de muestra con las 3 narrativas de Gemini...")
+    # Ejemplos (NO son salida de Gemini: solo muestran dónde queda
+    # cada sección). Día y semana se derivan de los datos reales del
+    # día; la explicación, de las alertas reales (o de una alerta de
+    # ejemplo si hoy no hay, para que la sección se vea).
+    try:
+        ejemplo_dia = _ejemplo_dia(datos, ensemble)
+        ejemplo_semana = _ejemplo_semana(datos)
+        alertas_muestra = alertas
+        if not alertas_muestra:
+            alertas_muestra = _alertas_ejemplo_muestra()
+            print("  (sin alertas reales hoy: se usa una de ejemplo)")
+        ejemplo_explicacion = _ejemplo_explicacion(alertas_muestra)
+        mensaje_gemini = generar_mensaje_completo(
+            datos, alertas_muestra, eventos, ensemble=ensemble,
+            narrativa_dia=ejemplo_dia,
+            semana_narrativa=ejemplo_semana,
+            explicacion_alertas=ejemplo_explicacion)
+        ok = bool(mensaje_gemini)
+        ok = ok and "LA SEMANA EN TEMPOAL" in mensaje_gemini
+        if ejemplo_dia:
+            ok = ok and ejemplo_dia.splitlines()[0][:40] in mensaje_gemini
+        if ejemplo_explicacion:
+            ok = (ok and ejemplo_explicacion.splitlines()[0][:40]
+                  in mensaje_gemini)
+        if ok:
+            with open('reporte_muestra_gemini.txt', 'w',
+                      encoding='utf-8') as f:
+                f.write(mensaje_gemini)
+            print("  ✅ Muestra guardada en reporte_muestra_gemini.txt")
+        else:
+            errores.append("la muestra Gemini no trae las secciones")
+            print("  ❌ FALLÓ")
+    except Exception as e:
+        errores.append(f"no se pudo generar la muestra Gemini: {e}")
         print(f"  ❌ FALLÓ ({e})")
 
     print("PASO 4b: Generando tarjeta...")
