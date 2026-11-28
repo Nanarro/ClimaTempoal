@@ -26,6 +26,7 @@ from datetime import datetime, timedelta
 
 import requests
 
+from .grafica_navidad import frase_rango_minima
 from .utils import logger, DIAS_ESP, obtener_hora_mexico
 
 # Gemini 3.5 Flash-Lite: capa gratuita de Google AI Studio (sin
@@ -749,86 +750,48 @@ def obtener_narrativa_dia(datos, ensemble=None, api_key=None,
 # Interpretación de la gráfica de frío de Navidad
 # ---------------------------------------------------------------------------
 
-def construir_prompt_navidad(probs):
+def construir_prompt_navidad(distribucion):
     """
     Arma el prompt para leer la gráfica de Navidad (pura).
 
-    `probs` es la lista de calcular_probabilidades_frio: un dict por
-    día con 'fecha' (date), 'prob_frio' (% <12 °C), 'prob_muy_frio'
-    (% <10 °C) y 'sin_datos'. El prompt lleva la distribución
-    completa en forma compacta más los datos clave ya calculados
-    (día con más frío, el 25 de diciembre y la tendencia).
+    `distribucion` es el dict de distribucion_minima_navidad: la
+    distribución de la mínima del 25 de diciembre por rango, el
+    rango más probable, P(<12), P(<10) y la probabilidad de lluvia
+    esa noche (si hay dato). El prompt lleva la distribución
+    completa más los datos clave ya calculados.
     """
-    probs = probs or []
-    con_datos = [p for p in probs if not p.get('sin_datos')]
+    dist = distribucion or {}
+    pares = dist.get('distribucion') or []
+    if not pares:
+        return ""
 
-    if con_datos:
-        primera = con_datos[0]['fecha']
-        ultima = con_datos[-1]['fecha']
-    else:
-        primera = ultima = None
-
-    lineas = ["Probabilidad de mínima fría en Tempoal por día, según "
-              "el ensemble GFS (31 miembros):"]
-    for p in probs:
-        fecha = p.get('fecha')
-        try:
-            dia_txt = (f"{DIAS_ESP.get(fecha.strftime('%A'), 'Día')} "
-                       f"{fecha.strftime('%d/%m')}")
-        except (AttributeError, ValueError, TypeError):
-            continue
-        if p.get('sin_datos') or p.get('prob_frio') is None:
-            lineas.append(f"- {dia_txt}: sin datos")
-        else:
-            lineas.append(
-                f"- {dia_txt}: frío (<12 °C) {p['prob_frio']}%, "
-                f"muy frío (<10 °C) {p.get('prob_muy_frio', 0)}%")
-
-    if con_datos:
-        pico = max(con_datos, key=lambda p: p.get('prob_frio') or 0)
-        try:
-            pico_txt = (f"{DIAS_ESP.get(pico['fecha'].strftime('%A'), 'Día')} "
-                        f"{pico['fecha'].strftime('%d/%m')}")
-        except (AttributeError, ValueError, TypeError):
-            pico_txt = "s/d"
+    lineas = ["Distribución de la mínima para la noche del 24 al 25 "
+              "de diciembre en Tempoal, según el ensemble GFS "
+              "(31 miembros):"]
+    for etiqueta, pct in pares:
+        lineas.append(f"- {etiqueta}: {pct}%")
+    mas_probable = dist.get('mas_probable')
+    if mas_probable:
+        etiqueta, pct = mas_probable
         lineas.append(
-            f"Día con mayor probabilidad de frío: {pico_txt} "
-            f"({pico.get('prob_frio', 0)}%).")
-        dia_25 = next((p for p in con_datos
-                       if p['fecha'].month == 12
-                       and p['fecha'].day == 25), None)
-        if dia_25 is not None:
-            lineas.append(
-                f"El 25 de diciembre: frío {dia_25.get('prob_frio', 0)}%, "
-                f"muy frío {dia_25.get('prob_muy_frio', 0)}%.")
-        mitad = max(1, len(con_datos) // 2)
-        primera_mitad = [p.get('prob_frio') or 0
-                         for p in con_datos[:mitad]]
-        segunda_mitad = [p.get('prob_frio') or 0
-                         for p in con_datos[mitad:]]
-        if primera_mitad and segunda_mitad:
-            media_1 = round(sum(primera_mitad) / len(primera_mitad))
-            media_2 = round(sum(segunda_mitad) / len(segunda_mitad))
-            lineas.append(
-                "Tendencia: la probabilidad media de frío pasa de "
-                f"{media_1}% (primera mitad) a {media_2}% "
-                "(segunda mitad).")
-
-    if primera is not None and ultima is not None:
-        rango_txt = (f"entre el {_fecha_larga(primera.isoformat())} y "
-                     f"el {_fecha_larga(ultima.isoformat())}")
-    else:
-        rango_txt = "en el periodo de la gráfica"
+            f"Lo más probable: {frase_rango_minima(etiqueta)} ({pct}%).")
+    if dist.get('prob_frio') is not None:
+        lineas.append(
+            f"Frío (<12 °C): {dist.get('prob_frio')}%. "
+            f"Muy frío (<10 °C): {dist.get('prob_muy_frio', 0)}%.")
+    if dist.get('prob_lluvia') is not None:
+        lineas.append(
+            f"Probabilidad de lluvia esa noche: {dist['prob_lluvia']}%.")
     lineas.append("")
     lineas.append(
         "Eres el meteorólogo de Protección Civil de Tempoal. Escribe "
         "1 o 2 líneas cortas en español, con tono serio y amigable, "
-        "leyendo esta gráfica: en qué días se concentra el frío, si "
-        "el 25 de diciembre en sí pinta frío o no, y si la "
-        "probabilidad va subiendo o bajando hacia Navidad. Usa SOLO "
-        f"los números de arriba: no inventes fechas fuera de "
-        f"{rango_txt}, ni récords, y no escribas años. No saludes ni "
-        "te presentes, solo la lectura.")
+        "leyendo esta distribución: dónde se concentra el frío, cuál "
+        "es la mínima más probable, si el 25 de diciembre en sí pinta "
+        "frío o no, y si lloverá esa noche. Usa SOLO los números de "
+        "arriba: no inventes fechas fuera del 24 al 26 de diciembre, "
+        "ni récords, y no escribas años. No saludes ni te presentes, "
+        "solo la lectura.")
     return "\n".join(lineas)
 
 
@@ -839,16 +802,16 @@ def obtener_interpretacion_navidad(datos_navidad, api_key=None,
     Pide a Gemini la lectura de la gráfica de Navidad (best-effort,
     nunca lanza excepciones). Devuelve 1-2 líneas validadas o None.
 
-    `datos_navidad` es la lista de calcular_probabilidades_frio. La
-    ventana de validación son las fechas de la gráfica. Si Gemini
-    falla por transporte, se intenta una vez con Groq
-    (`groq_api_key` o GROQ_API_KEY). Sin datos, sin llave o si la
-    respuesta no pasa la validación, devuelve None.
+    `datos_navidad` es el dict de distribucion_minima_navidad. La
+    ventana de validación son el 25 de diciembre y los días cercanos
+    (24 y 26). Si Gemini falla por transporte, se intenta una vez
+    con Groq (`groq_api_key` o GROQ_API_KEY). Sin datos, sin llave
+    o si la respuesta no pasa la validación, devuelve None.
     """
     try:
-        probs = datos_navidad or []
-        if not any(not p.get('sin_datos') for p in probs):
-            logger.info("🤖 Navidad: sin datos de probabilidad, se omite")
+        dist = datos_navidad or {}
+        if not dist.get('distribucion'):
+            logger.info("🤖 Navidad: sin datos de distribución, se omite")
             return None
         llave = (api_key or os.environ.get("GEMINI_API_KEY") or "").strip()
         if not llave:
@@ -856,19 +819,21 @@ def obtener_interpretacion_navidad(datos_navidad, api_key=None,
             return None
         llave_groq = (groq_api_key
                       or os.environ.get("GROQ_API_KEY") or "").strip()
-        prompt = construir_prompt_navidad(probs)
+        prompt = construir_prompt_navidad(dist)
         texto = llamar_gemini(prompt, llave, modelo, etiqueta="Navidad",
                               groq_api_key=llave_groq)
         if not texto:
             logger.warning("🤖 Navidad: sin texto de Gemini, se omite")
             return None
         fechas = []
-        for p in probs:
-            fecha = p.get('fecha')
-            try:
-                fechas.append(fecha.isoformat())
-            except AttributeError:
-                continue
+        fecha_25 = dist.get('fecha')
+        if fecha_25 is not None:
+            for delta in (-1, 0, 1):
+                try:
+                    fechas.append(
+                        (fecha_25 + timedelta(days=delta)).isoformat())
+                except (AttributeError, TypeError):
+                    continue
         if validar_narrativa(texto, fechas):
             logger.info("✅ Navidad: interpretación lista")
             return texto.strip()
