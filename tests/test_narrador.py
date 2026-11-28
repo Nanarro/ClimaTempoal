@@ -141,29 +141,27 @@ TEXTO_BUENO = (
     "Las mañanas siguen frescas, entre 12 y 15 °C.")
 
 
-def _probs_navidad_ejemplo():
-    """Probabilidades de frío por día, como calcular_probabilidades_frio.
+def _distribucion_navidad_ejemplo():
+    """Distribución del 25 de diciembre, como distribucion_minima_navidad.
 
-    28 días (28 nov – 25 dic): el frío sube hacia el 19-21 dic (pico
-    37%) y el 25 de diciembre marca 40% (<12 °C) y 23% (<10 °C).
+    Datos reales de Tempoal del 28 nov 2026: lo más probable 15–16 °C
+    (42%), frío (<12 °C) 23%, muy frío (<10 °C) 6%, lluvia esa noche
+    22%.
     """
-    from datetime import date, timedelta
-    inicio = date(2026, 11, 28)
-    probs = []
-    for i in range(28):
-        fecha = inicio + timedelta(days=i)
-        if fecha.day == 25 and fecha.month == 12:
-            frio, muy_frio = 40, 23
-        elif fecha.day in (19, 20, 21) and fecha.month == 12:
-            frio, muy_frio = 37, 20
-        elif fecha.month == 12:
-            frio, muy_frio = 25, 12
-        else:
-            frio, muy_frio = 10, 3
-        probs.append({'fecha': fecha, 'sin_datos': False,
-                      'prob_frio': frio, 'prob_muy_frio': muy_frio,
-                      'n_miembros': 30})
-    return probs
+    from datetime import date
+    return {
+        'fecha': date(2026, 12, 25),
+        'distribucion': [
+            ('≤ 0°', 0), ('1–5°', 3), ('6–8°', 0), ('9–10°', 16),
+            ('11–12°', 16), ('13–14°', 19), ('15–16°', 42),
+            ('17–18°', 3), ('19–20°', 0), ('≥ 21°', 0),
+        ],
+        'mas_probable': ('15–16°', 42),
+        'n_miembros': 31,
+        'prob_frio': 23,
+        'prob_muy_frio': 6,
+        'prob_lluvia': 22,
+    }
 
 
 def _alertas_ejemplo():
@@ -710,21 +708,34 @@ class TestConstruirPromptDia(unittest.TestCase):
 
 
 class TestConstruirPromptNavidad(unittest.TestCase):
-    """El prompt de Navidad lleva la distribución de 30 días."""
+    """El prompt de Navidad lleva la distribución del 25 de diciembre."""
 
-    def test_incluye_dias_probabilidades_y_25(self):
-        prompt = construir_prompt_navidad(_probs_navidad_ejemplo())
-        self.assertIn("28/11", prompt)
-        self.assertIn("25/12", prompt)
-        self.assertIn("40%", prompt)  # el 25 de diciembre
-        self.assertIn("37%", prompt)  # el pico 19-21 dic
-        self.assertIn("Tendencia:", prompt)
+    def test_incluye_rangos_mas_probable_y_lluvia(self):
+        prompt = construir_prompt_navidad(_distribucion_navidad_ejemplo())
+        self.assertIn("15–16°", prompt)
+        self.assertIn("42%", prompt)
+        self.assertIn("Lo más probable", prompt)
+        self.assertIn("Probabilidad de lluvia esa noche: 22%", prompt)
+        self.assertIn("Frío (<12 °C): 23%", prompt)
+        self.assertIn("≤ 0°", prompt)
+        self.assertIn("≥ 21°", prompt)
+
+    def test_sin_lluvia_no_menciona_lluvia(self):
+        dist = _distribucion_navidad_ejemplo()
+        dist['prob_lluvia'] = None
+        prompt = construir_prompt_navidad(dist)
+        self.assertNotIn("Probabilidad de lluvia", prompt)
+
+    def test_sin_distribucion_prompt_vacio(self):
+        self.assertEqual(construir_prompt_navidad(None), "")
+        self.assertEqual(construir_prompt_navidad({}), "")
 
     def test_instrucciones_de_no_inventar(self):
-        prompt = construir_prompt_navidad(_probs_navidad_ejemplo())
+        prompt = construir_prompt_navidad(_distribucion_navidad_ejemplo())
         self.assertIn("SOLO", prompt)
         self.assertIn("no inventes", prompt)
         self.assertIn("1 o 2 líneas", prompt)
+        self.assertIn("24 al 26 de diciembre", prompt)
 
 
 class TestConstruirPromptAlertas(unittest.TestCase):
@@ -794,10 +805,10 @@ class TestObtenerNarrativaDia(unittest.TestCase):
 
 
 TEXTO_NAVIDAD_BUENO = (
-    "El frío se concentra entre el 19 y el 21 de diciembre, con 37% "
-    "de probabilidad.\n"
-    "El 25 de diciembre pinta frío, con 40% de probabilidad de "
-    "mínima menor a 12 °C.")
+    "Lo más probable es una mínima entre 15 y 16 °C, con 42% de "
+    "probabilidad.\n"
+    "El 25 de diciembre pinta templado, con solo 23% de probabilidad "
+    "de bajar de 12 °C.")
 
 
 class TestObtenerInterpretacionNavidad(unittest.TestCase):
@@ -807,18 +818,18 @@ class TestObtenerInterpretacionNavidad(unittest.TestCase):
         with patch('src.narrador.requests.post') as mock_post:
             mock_post.return_value = _respuesta_gemini(TEXTO_NAVIDAD_BUENO)
             texto = obtener_interpretacion_navidad(
-                _probs_navidad_ejemplo(), api_key="llave-falsa")
+                _distribucion_navidad_ejemplo(), api_key="llave-falsa")
         self.assertEqual(texto, TEXTO_NAVIDAD_BUENO)
 
     def test_sin_datos_devuelve_none(self):
         self.assertIsNone(obtener_interpretacion_navidad(
             [], api_key="llave-falsa"))
-        sin_datos = [{'fecha': p['fecha'], 'sin_datos': True,
-                      'prob_frio': None, 'prob_muy_frio': None,
-                      'n_miembros': 0}
-                     for p in _probs_navidad_ejemplo()]
         self.assertIsNone(obtener_interpretacion_navidad(
-            sin_datos, api_key="llave-falsa"))
+            {}, api_key="llave-falsa"))
+        self.assertIsNone(obtener_interpretacion_navidad(
+            None, api_key="llave-falsa"))
+        self.assertIsNone(obtener_interpretacion_navidad(
+            {'distribucion': []}, api_key="llave-falsa"))
 
     def test_error_http_devuelve_none(self):
         mock = MagicMock()
@@ -826,21 +837,21 @@ class TestObtenerInterpretacionNavidad(unittest.TestCase):
             response=MagicMock(status_code=400))
         with patch('src.narrador.requests.post', return_value=mock):
             self.assertIsNone(obtener_interpretacion_navidad(
-                _probs_navidad_ejemplo(), api_key="llave-falsa"))
+                _distribucion_navidad_ejemplo(), api_key="llave-falsa"))
 
     def test_texto_invalido_devuelve_none(self):
         with patch('src.narrador.requests.post') as mock_post:
             mock_post.return_value = _respuesta_gemini(
                 "Será un récord de frío en 2026.\nSegunda línea.")
             self.assertIsNone(obtener_interpretacion_navidad(
-                _probs_navidad_ejemplo(), api_key="llave-falsa"))
+                _distribucion_navidad_ejemplo(), api_key="llave-falsa"))
 
     def test_sin_llave_no_hay_llamada_de_red(self):
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop('GEMINI_API_KEY', None)
             with patch('src.narrador.requests.post') as mock_post:
                 self.assertIsNone(obtener_interpretacion_navidad(
-                    _probs_navidad_ejemplo(), api_key=None))
+                    _distribucion_navidad_ejemplo(), api_key=None))
                 mock_post.assert_not_called()
 
 
@@ -887,31 +898,56 @@ class TestObtenerExplicacionAlertas(unittest.TestCase):
 
 
 class TestGenerarCaptionNavidad(unittest.TestCase):
-    """El caption de Navidad: base igual y lectura opcional."""
+    """El caption de Navidad: distribución, lluvia e interpretación."""
 
-    BASE = ("🎄 <b>¿FRÍO EN NAVIDAD?</b> Probabilidad de mínima menor a "
-            "12 °C rumbo al 25 de diciembre, según el ensemble GFS "
-            "(31 miembros). A 30 días la incertidumbre es muy alta.")
+    BASE = ("🎄 <b>¿FRÍO EN NAVIDAD?</b> Distribución de la mínima para "
+            "la noche del 24 al 25 de diciembre, según el ensemble GFS "
+            "(31 miembros).")
 
-    def test_sin_interpretacion_es_el_caption_base(self):
-        self.assertEqual(
-            generar_caption_navidad(_probs_navidad_ejemplo()), self.BASE)
-        self.assertEqual(generar_caption_navidad([], None), self.BASE)
-        self.assertEqual(
-            generar_caption_navidad(_probs_navidad_ejemplo(), ""), self.BASE)
+    def test_sin_distribucion_es_la_base_generica(self):
+        self.assertEqual(generar_caption_navidad(None), self.BASE)
+        self.assertEqual(generar_caption_navidad({}), self.BASE)
+
+    def test_con_distribucion_menciona_mas_probable_y_dias(self):
+        from datetime import date
+        caption = generar_caption_navidad(
+            _distribucion_navidad_ejemplo(), hoy=date(2026, 11, 28))
+        self.assertTrue(caption.startswith(self.BASE))
+        self.assertIn("entre 15 y 16 °C (42%)", caption)
+        self.assertIn("Probabilidad de lluvia esa noche: 22%", caption)
+        self.assertIn("A 27 días la incertidumbre es muy alta.", caption)
+
+    def test_sin_lluvia_no_menciona_lluvia(self):
+        from datetime import date
+        dist = _distribucion_navidad_ejemplo()
+        dist['prob_lluvia'] = None
+        caption = generar_caption_navidad(dist, hoy=date(2026, 11, 28))
+        self.assertNotIn("Probabilidad de lluvia", caption)
+        self.assertIn("entre 15 y 16 °C (42%)", caption)
+
+    def test_en_navidad_no_dice_dias(self):
+        from datetime import date
+        caption = generar_caption_navidad(
+            _distribucion_navidad_ejemplo(), hoy=date(2026, 12, 25))
+        self.assertIn("La fecha ya está encima", caption)
+        self.assertNotIn("A 0 días", caption)
 
     def test_con_interpretacion_se_agrega_al_final(self):
+        from datetime import date
         caption = generar_caption_navidad(
-            _probs_navidad_ejemplo(), interpretacion=TEXTO_NAVIDAD_BUENO)
+            _distribucion_navidad_ejemplo(),
+            interpretacion=TEXTO_NAVIDAD_BUENO, hoy=date(2026, 11, 28))
         self.assertTrue(caption.startswith(self.BASE))
         self.assertIn(TEXTO_NAVIDAD_BUENO, caption)
         self.assertLessEqual(len(caption), 1000)
 
     def test_interpretacion_larga_se_recorta_sin_tocar_la_base(self):
+        from datetime import date
         larga = "Palabra " * 200
         caption = generar_caption_navidad(
-            _probs_navidad_ejemplo(), interpretacion=larga)
-        self.assertTrue(caption.startswith(self.BASE))
+            _distribucion_navidad_ejemplo(), interpretacion=larga,
+            hoy=date(2026, 11, 28))
+        self.assertIn("entre 15 y 16 °C (42%)", caption)
         self.assertLessEqual(len(caption), 1000)
 
 
