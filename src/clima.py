@@ -92,7 +92,8 @@ def obtener_datos_ensemble(max_reintentos=3, timeout=20):
 def obtener_datos_ensemble_navidad(max_reintentos=3, timeout=25):
     """
     Obtiene el ensemble GFS (35 días) para la gráfica de Navidad:
-    temperatura mínima diaria por miembro.
+    temperatura mínima diaria por miembro, más la lluvia acumulada
+    del día (para la probabilidad de lluvia de la noche 24→25).
 
     Devuelve el dict JSON de la Ensemble API o None si falla.
     Best-effort: sin estos datos simplemente no hay gráfica.
@@ -101,7 +102,7 @@ def obtener_datos_ensemble_navidad(max_reintentos=3, timeout=25):
     params = {
         "latitude": LAT,
         "longitude": LON,
-        "daily": ["temperature_2m_min"],
+        "daily": ["temperature_2m_min", "precipitation_sum"],
         "models": MODELO_ENSEMBLE_NAVIDAD,
         "timezone": "America/Mexico_City",
         "forecast_days": 35,
