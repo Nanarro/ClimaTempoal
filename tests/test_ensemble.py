@@ -25,9 +25,8 @@ from src.formato import (
     obtener_bloques_diarios,
 )
 from src.grafica_navidad import (
-    calcular_probabilidades_frio,
+    distribucion_minima_navidad,
     generar_grafica_navidad,
-    rango_navidad,
     temporada_navidad,
 )
 from src.tarjeta import generar_tarjeta_diaria
@@ -128,6 +127,30 @@ def _gfs_ejemplo():
             'temperature_2m_min_member01': [11.0, 13.0, 9.0, 12.5, 15.0],
             'temperature_2m_min_member02': [12.5, 11.5, 10.5, 13.0, 14.0],
             'temperature_2m_min_member03': [13.0, 12.0, 11.0, 11.0, 16.0],
+        }
+    }
+
+
+def _gfs_navidad_ejemplo():
+    """Ensemble GFS sintético para la distribución del 25 de diciembre.
+
+    24–26 dic, 3 miembros + control. El 25 dic las mínimas son
+    15.5, 9.5, 4.4 (miembros) y 16.2 (control): 15–16 °C: 2/4 (50%),
+    9–10 °C: 1/4 (25%), 1–5 °C: 1/4 (25%); frío (<12): 2/4 (50%),
+    muy frío (<10): 2/4 (50%). Lluvia ese día: 0.5, 0.0, 0.0, 0.3
+    mm (control): 2/4 con >0.1 mm (50%).
+    """
+    return {
+        'daily': {
+            'time': ['2026-12-24', '2026-12-25', '2026-12-26'],
+            'temperature_2m_min': [13.0, 16.2, 11.0],
+            'temperature_2m_min_member01': [16.0, 15.5, 14.0],
+            'temperature_2m_min_member02': [10.0, 9.5, 12.0],
+            'temperature_2m_min_member03': [21.0, 4.4, 0.0],
+            'precipitation_sum': [0.0, 0.5, 0.0],
+            'precipitation_sum_member01': [0.0, 0.0, 0.0],
+            'precipitation_sum_member02': [0.2, 0.0, 0.0],
+            'precipitation_sum_member03': [0.0, 0.3, 0.0],
         }
     }
 
@@ -283,6 +306,11 @@ class TestFetchEnsemble(unittest.TestCase):
         })
         data = obtener_datos_ensemble_navidad(max_reintentos=1)
         self.assertIsNotNone(data)
+        # La gráfica de distribución necesita también la lluvia del
+        # 25 dic (probabilidad de lluvia esa noche).
+        params = mock_get.call_args[1]['params']
+        self.assertIn('precipitation_sum', params['daily'])
+        self.assertIn('temperature_2m_min', params['daily'])
 
     @patch('src.clima.requests.get', side_effect=requests.Timeout())
     def test_obtener_ensemble_navidad_timeout_none(self, mock_get):
@@ -290,36 +318,75 @@ class TestFetchEnsemble(unittest.TestCase):
 
 
 class TestGraficaNavidad(unittest.TestCase):
-    """Probabilidades de frío y la imagen de la gráfica."""
+    """Distribución de la mínima del 25 de diciembre y su imagen."""
 
-    def test_probabilidades_por_dia(self):
-        probs = calcular_probabilidades_frio(
-            _gfs_ejemplo(), date(2026, 11, 26), date(2026, 11, 30))
-        self.assertEqual(len(probs), 5)
-        # 26 nov: <12 °C: 1/3 (11.0); <10 °C: 0/3
-        self.assertEqual(probs[0]['prob_frio'], 33)
-        self.assertEqual(probs[0]['prob_muy_frio'], 0)
-        # 28 nov: <12 °C: 3/3; <10 °C: 1/3 (9.0)
-        self.assertEqual(probs[2]['prob_frio'], 100)
-        self.assertEqual(probs[2]['prob_muy_frio'], 33)
-        # 30 nov: nadie por debajo de 12
-        self.assertEqual(probs[4]['prob_frio'], 0)
-        self.assertEqual(probs[4]['n_miembros'], 3)
+    def test_distribucion_rangos_y_mas_probable(self):
+        dist = distribucion_minima_navidad(_gfs_navidad_ejemplo())
+        self.assertIsNotNone(dist)
+        self.assertEqual(dist['fecha'], date(2026, 12, 25))
+        self.assertEqual(dist['n_miembros'], 4)
+        rangos = dict(dist['distribucion'])
+        self.assertEqual(len(rangos), 10)
+        self.assertEqual(rangos['15–16°'], 50)
+        self.assertEqual(rangos['9–10°'], 25)
+        self.assertEqual(rangos['1–5°'], 25)
+        self.assertEqual(rangos['≤ 0°'], 0)
+        self.assertEqual(rangos['≥ 21°'], 0)
+        self.assertEqual(dist['mas_probable'], ('15–16°', 50))
+        self.assertEqual(dist['prob_frio'], 50)
+        self.assertEqual(dist['prob_muy_frio'], 50)
+        self.assertEqual(dist['prob_lluvia'], 50)
 
-    def test_dia_sin_datos_no_se_inventa(self):
-        probs = calcular_probabilidades_frio(
-            _gfs_ejemplo(), date(2026, 11, 26), date(2026, 12, 1))
-        self.assertEqual(len(probs), 6)
-        ultimo = probs[-1]
-        self.assertTrue(ultimo['sin_datos'])
-        self.assertIsNone(ultimo['prob_frio'])
+    def test_distribucion_bordes(self):
+        # Un valor en cada borde: cada uno cae en un solo rango.
+        valores = [0.0, 0.5, 5.0, 6.0, 9.0, 10.0,
+                   11.0, 13.0, 15.0, 17.0, 19.0, 21.0]
+        datos = {'daily': {
+            'time': ['2026-12-25'],
+            'temperature_2m_min': [valores[0]],
+        }}
+        for i, v in enumerate(valores[1:], start=1):
+            datos['daily'][f'temperature_2m_min_member{i:02d}'] = [v]
+        dist = distribucion_minima_navidad(datos)
+        rangos = dict(dist['distribucion'])
+        # 12 valores: 1/12 ≈ 8%, 2/12 ≈ 17%
+        self.assertEqual(rangos['≤ 0°'], 8)
+        self.assertEqual(rangos['1–5°'], 17)   # 0.5 y 5.0
+        self.assertEqual(rangos['6–8°'], 8)
+        self.assertEqual(rangos['9–10°'], 17)  # 9.0 y 10.0
+        self.assertEqual(rangos['11–12°'], 8)
+        self.assertEqual(rangos['13–14°'], 8)
+        self.assertEqual(rangos['15–16°'], 8)
+        self.assertEqual(rangos['17–18°'], 8)
+        self.assertEqual(rangos['19–20°'], 8)
+        self.assertEqual(rangos['≥ 21°'], 8)
+        self.assertEqual(dist['n_miembros'], 12)
 
-    def test_sin_miembros_lista_vacia(self):
-        self.assertEqual(
-            calcular_probabilidades_frio(
-                {'daily': {'time': []}},
-                date(2026, 11, 26), date(2026, 11, 30)),
-            [])
+    def test_distribucion_suma_cercana_a_100(self):
+        # Los % son redondeados: la suma puede quedar en 99-101.
+        dist = distribucion_minima_navidad(_gfs_navidad_ejemplo())
+        total = sum(p for _, p in dist['distribucion'])
+        self.assertIn(total, (99, 100, 101))
+
+    def test_distribucion_sin_25_dic_none(self):
+        self.assertIsNone(
+            distribucion_minima_navidad(_gfs_ejemplo()))
+
+    def test_distribucion_sin_miembros_none(self):
+        self.assertIsNone(distribucion_minima_navidad(
+            {'daily': {'time': ['2026-12-25']}}))
+        self.assertIsNone(distribucion_minima_navidad({}))
+        self.assertIsNone(distribucion_minima_navidad(None))
+
+    def test_distribucion_sin_lluvia_no_inventa(self):
+        datos = _gfs_navidad_ejemplo()
+        for clave in list(datos['daily']):
+            if clave.startswith('precipitation_sum'):
+                del datos['daily'][clave]
+        dist = distribucion_minima_navidad(datos)
+        self.assertIsNotNone(dist)
+        self.assertIsNone(dist['prob_lluvia'])
+        self.assertEqual(dist['mas_probable'], ('15–16°', 50))
 
     def test_temporada(self):
         self.assertTrue(temporada_navidad(date(2026, 11, 25)))  # 30 días
@@ -329,19 +396,12 @@ class TestGraficaNavidad(unittest.TestCase):
         self.assertFalse(temporada_navidad(date(2026, 12, 26)))
         self.assertFalse(temporada_navidad(date(2026, 6, 15)))
 
-    def test_rango(self):
-        inicio, fin = rango_navidad(date(2026, 11, 25))
-        self.assertEqual((inicio, fin),
-                         (date(2026, 11, 26), date(2026, 12, 25)))
-        self.assertIsNone(rango_navidad(date(2026, 12, 26)))
-
     def test_genera_png(self):
-        probs = calcular_probabilidades_frio(
-            _gfs_ejemplo(), date(2026, 11, 26), date(2026, 11, 30))
+        dist = distribucion_minima_navidad(_gfs_navidad_ejemplo())
         ruta = "/tmp/grafica_navidad_test.png"
         if os.path.exists(ruta):
             os.remove(ruta)
-        resultado = generar_grafica_navidad(probs, ruta)
+        resultado = generar_grafica_navidad(dist, ruta)
         self.assertEqual(resultado, ruta)
         self.assertTrue(os.path.exists(ruta))
         self.assertGreater(os.path.getsize(ruta), 10000)
@@ -351,17 +411,25 @@ class TestGraficaNavidad(unittest.TestCase):
             self.assertEqual(img.format, "PNG")
         os.remove(ruta)
 
-    def test_sin_probabilidades_none(self):
+    def test_grafica_sin_distribucion_none(self):
         self.assertIsNone(
-            generar_grafica_navidad([], "/tmp/grafica_vacia.png"))
+            generar_grafica_navidad(None, "/tmp/grafica_vacia.png"))
+        self.assertIsNone(
+            generar_grafica_navidad({}, "/tmp/grafica_vacia.png"))
+        self.assertIsNone(
+            generar_grafica_navidad({'distribucion': []},
+                                    "/tmp/grafica_vacia.png"))
 
-    def test_grafica_con_dia_sin_datos_no_falla(self):
-        probs = calcular_probabilidades_frio(
-            _gfs_ejemplo(), date(2026, 11, 26), date(2026, 12, 1))
-        ruta = "/tmp/grafica_navidad_sindatos.png"
+    def test_grafica_sin_lluvia_no_falla(self):
+        datos = _gfs_navidad_ejemplo()
+        for clave in list(datos['daily']):
+            if clave.startswith('precipitation_sum'):
+                del datos['daily'][clave]
+        dist = distribucion_minima_navidad(datos)
+        ruta = "/tmp/grafica_navidad_sinlluvia.png"
         if os.path.exists(ruta):
             os.remove(ruta)
-        self.assertEqual(generar_grafica_navidad(probs, ruta), ruta)
+        self.assertEqual(generar_grafica_navidad(dist, ruta), ruta)
         os.remove(ruta)
 
 
