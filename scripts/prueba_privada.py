@@ -42,9 +42,8 @@ from src.clima import (
 )
 from src.formato import generar_caption_tarjeta, generar_mensaje_completo
 from src.grafica_navidad import (
-    calcular_probabilidades_frio,
+    distribucion_minima_navidad,
     generar_grafica_navidad,
-    rango_navidad,
     temporada_navidad,
 )
 from src.narrador import (
@@ -293,13 +292,20 @@ def main():
 
     print("PASO 2c2: Narrativas nuevas SIN llave (sin red ni crash)...")
     try:
-        probs_prueba = [{'fecha': date.today(), 'sin_datos': False,
-                         'prob_frio': 10, 'prob_muy_frio': 2,
-                         'n_miembros': 30}]
+        dist_prueba = {
+            'fecha': date(date.today().year, 12, 25),
+            'distribucion': [('≤ 0°', 0), ('1–5°', 3), ('6–8°', 0),
+                             ('9–10°', 16), ('11–12°', 16),
+                             ('13–14°', 19), ('15–16°', 42),
+                             ('17–18°', 3), ('19–20°', 0), ('≥ 21°', 0)],
+            'mas_probable': ('15–16°', 42),
+            'n_miembros': 31, 'prob_frio': 23, 'prob_muy_frio': 6,
+            'prob_lluvia': 22,
+        }
         sin_llave = [
             obtener_narrativa_dia(datos, ensemble=ensemble, api_key=None,
                                   groq_api_key=None),
-            obtener_interpretacion_navidad(probs_prueba, api_key=None,
+            obtener_interpretacion_navidad(dist_prueba, api_key=None,
                                            groq_api_key=None),
             obtener_explicacion_alertas(_alertas_ejemplo_muestra(),
                                         api_key=None,
@@ -417,13 +423,10 @@ def main():
         try:
             datos_gfs = obtener_datos_ensemble_navidad()
             if datos_gfs:
-                rango = rango_navidad()
-                if rango:
-                    probs = calcular_probabilidades_frio(
-                        datos_gfs, rango[0], rango[1])
-                    if probs:
-                        ruta_navidad = generar_grafica_navidad(
-                            probs, 'grafica_navidad_prueba.png')
+                dist = distribucion_minima_navidad(datos_gfs)
+                if dist:
+                    ruta_navidad = generar_grafica_navidad(
+                        dist, 'grafica_navidad_prueba.png')
         except Exception as e:
             print(f"  ⚠️  Gráfica no disponible ({e})")
         if ruta_navidad:
