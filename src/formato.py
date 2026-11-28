@@ -3,8 +3,10 @@ Módulo de formateo de mensajes para Telegram
 """
 
 from datetime import datetime
+from .grafica_navidad import frase_rango_minima
 from .interpretador import interpretar_bloque, interpretar_dia
-from .utils import logger, DIAS_ESP, formatear_fecha_completa
+from .utils import (logger, DIAS_ESP, formatear_fecha_completa,
+                    obtener_hora_mexico)
 
 def obtener_icono_clima(codigo):
     """
@@ -764,25 +766,46 @@ def generar_caption_tarjeta(datos, ensemble=None, narrativa_dia=None):
 
 # Caption de la gráfica de Navidad (el mismo de siempre).
 CAPTION_NAVIDAD_BASE = (
-    "🎄 <b>¿FRÍO EN NAVIDAD?</b> Probabilidad de mínima menor a "
-    "12 °C rumbo al 25 de diciembre, según el ensemble GFS "
-    "(31 miembros). A 30 días la incertidumbre es muy alta.")
+    "🎄 <b>¿FRÍO EN NAVIDAD?</b> Distribución de la mínima para la "
+    "noche del 24 al 25 de diciembre, según el ensemble GFS "
+    "(31 miembros).")
 
 
-def generar_caption_navidad(datos, interpretacion=None):
+def generar_caption_navidad(distribucion, interpretacion=None, hoy=None):
     """
     Caption de la foto de la gráfica de Navidad (límite de Telegram:
     1024 caracteres; aquí se usa 1000 como margen).
 
-    `datos` es la lista de probabilidades por día (ver
-    calcular_probabilidades_frio); el caption base no depende de
-    ella y queda igual que siempre. Si `interpretacion` trae la
-    lectura de Gemini (1-2 líneas), se agrega al final; si el total
-    pasara de 1000 caracteres, se recorta la interpretación (nunca
-    el caption base).
+    `distribucion` es el dict de distribucion_minima_navidad: el
+    caption dice cuál es el rango más probable con su %, la
+    probabilidad de lluvia esa noche (si hay dato) y cuántos días
+    faltan para Navidad (de la fecha, no fijos). Si `interpretacion`
+    trae la lectura de Gemini (1-2 líneas), se agrega al final; si
+    el total pasara de 1000 caracteres, se recorta la interpretación
+    (nunca el caption base).
     """
     try:
         caption = CAPTION_NAVIDAD_BASE
+        dist = distribucion or {}
+        mas_probable = dist.get('mas_probable')
+        if mas_probable:
+            etiqueta, pct = mas_probable
+            caption += (f" Lo más probable: "
+                        f"{frase_rango_minima(etiqueta)} ({pct}%).")
+        prob_lluvia = dist.get('prob_lluvia')
+        if prob_lluvia is not None:
+            caption += (f" Probabilidad de lluvia esa noche: "
+                        f"{prob_lluvia}%.")
+        fecha_25 = dist.get('fecha')
+        if fecha_25 is not None:
+            hoy = hoy or obtener_hora_mexico().date()
+            dias = (fecha_25 - hoy).days
+            if dias > 0:
+                caption += (f" A {dias} días la incertidumbre es muy "
+                            "alta.")
+            else:
+                caption += (" La fecha ya está encima: la "
+                            "incertidumbre es mucho menor.")
         texto = (str(interpretacion).strip()
                  if interpretacion else "")
         if texto:
