@@ -32,9 +32,8 @@ from src.narrador import (
     obtener_narrativa_semanal,
 )
 from src.grafica_navidad import (
-    calcular_probabilidades_frio,
+    distribucion_minima_navidad,
     generar_grafica_navidad,
-    rango_navidad,
     temporada_navidad,
 )
 from src.tarjeta import generar_tarjeta_diaria
@@ -183,22 +182,21 @@ def main():
         ruta_tarjeta = None
 
     # 4c. Gráfica de Navidad (opcional, best-effort: solo en temporada
-    # y solo si hay datos del ensemble GFS; nunca bloquea el reporte)
+    # y solo si hay datos del ensemble GFS para el 25 de diciembre;
+    # nunca bloquea el reporte)
     logger.info("\n📋 PASO 4c: Gráfica de Navidad (si es temporada)...")
     ruta_navidad = None
-    probs_navidad = None
+    distribucion_navidad = None
     interpretacion_navidad = None
     if temporada_navidad():
         try:
             datos_gfs = obtener_datos_ensemble_navidad()
             if datos_gfs:
-                rango = rango_navidad()
-                if rango:
-                    probs_navidad = calcular_probabilidades_frio(
-                        datos_gfs, rango[0], rango[1])
-                    if probs_navidad:
-                        ruta_navidad = generar_grafica_navidad(
-                            probs_navidad, "grafica_navidad.png")
+                distribucion_navidad = distribucion_minima_navidad(
+                    datos_gfs)
+                if distribucion_navidad:
+                    ruta_navidad = generar_grafica_navidad(
+                        distribucion_navidad, "grafica_navidad.png")
             if not ruta_navidad:
                 logger.warning("⚠️  Sin gráfica de Navidad, el reporte sigue igual")
         except Exception as e:
@@ -206,12 +204,12 @@ def main():
         # Interpretación de la gráfica con Gemini (opcional,
         # best-effort: solo si la gráfica salió; si falla, el caption
         # queda como siempre y nada se rompe)
-        if probs_navidad:
+        if distribucion_navidad:
             logger.info("\n📋 PASO 4c2: Interpretación de Navidad "
                         "(Gemini, opcional)...")
             try:
                 interpretacion_navidad = obtener_interpretacion_navidad(
-                    probs_navidad, groq_api_key=groq_api_key)
+                    distribucion_navidad, groq_api_key=groq_api_key)
                 if interpretacion_navidad:
                     logger.info("✅ Interpretación de Navidad lista")
                 else:
@@ -231,7 +229,7 @@ def main():
             logger.warning("⚠️  No se pudo enviar la tarjeta, continúa el texto")
     if ruta_navidad:
         caption_navidad = generar_caption_navidad(
-            probs_navidad, interpretacion=interpretacion_navidad)
+            distribucion_navidad, interpretacion=interpretacion_navidad)
         if not enviar_foto_telegram(ruta_navidad, caption_navidad):
             logger.warning("⚠️  No se pudo enviar la gráfica de Navidad")
     exito = enviar_mensaje_telegram(mensaje, max_reintentos=3)
