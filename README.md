@@ -37,7 +37,7 @@ La idea es simple: **que cualquier persona entienda el clima de hoy**, no solo q
 - 🖼️ **La tarjeta diaria** — el pronóstico en una imagen: por la mañana, tarde y noche, con fotos del cielo según el clima.
 - 📝 **El texto del reporte** — resumen ejecutivo, condiciones actuales con viento, el pronóstico hora por hora, los próximos 3 días, el panorama de la semana y las estadísticas semanales.
 - 📅 **La semana en Tempoal** — un panorama narrado de lo que viene en la semana, escrito con ayuda de Gemini.
-- 🎄 **¿Frío en Navidad?** — en temporada, una gráfica con la probabilidad de mínima fría rumbo al 25 de diciembre.
+- 🎄 **¿Frío en Navidad?** — en temporada, una gráfica con la distribución de la mínima para la noche del 24 al 25 de diciembre: en qué rango cae lo más probable, no solo la probabilidad de frío.
 - 📊 **Confianza real** — la lluvia y la confianza no son un cálculo del bot: se miden con el ensemble de ECMWF, el mismo modelo corrido 51 veces para ver en qué coinciden sus miembros.
 - 📢 **Alertas** — si hay algún evento meteorológico en las próximas 24 horas, el reporte lo avisa.
 
